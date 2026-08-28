@@ -1,0 +1,1 @@
+"""WooCommerce connector module scaffold."""

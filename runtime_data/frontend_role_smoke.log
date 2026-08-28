@@ -1,0 +1,24 @@
+
+> frontend@0.1.0 dev
+> next dev -H 0.0.0.0
+
+▲ Next.js 16.3.0 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://0.0.0.0:3000
+✓ Ready in 4.4s
+✓ Running next.config.ts took 203ms
+Creating turbopack project {
+  dir: "C:\\Users\\User\\Documents\\ChoiceOye\\Inaam's Ecommerce ERP\\frontend",
+  testMode: true
+}
+
+○ Compiling /login ...
+ GET /login 200 in 1078ms (next.js: 24ms, application-code: 1054ms)
+ GET / 200 in 2.3s (next.js: 730ms, application-code: 1598ms)
+ GET /admin 200 in 4.5s (next.js: 3.7s, application-code: 857ms)
+○ Compiling /vendor ...
+ GET /vendor 200 in 5.2s (next.js: 4.6s, application-code: 582ms)
+ GET /rider 200 in 1299ms (next.js: 649ms, application-code: 650ms)
+ GET /admin/vendors 200 in 1220ms (next.js: 551ms, application-code: 669ms)
+ GET /vendor/pos 200 in 1719ms (next.js: 622ms, application-code: 1097ms)
+ GET / 200 in 425ms (next.js: 27ms, application-code: 398ms)

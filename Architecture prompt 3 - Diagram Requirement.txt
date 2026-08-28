@@ -1,0 +1,80 @@
+Architecture Diagram Requirement
+
+Create a **complete system architecture diagram** for the ERP based strictly on the implementation found in the project.
+
+The diagram must be written in **Mermaid syntax** and included in ARCHITECTURE.md.
+
+The architecture diagram should accurately represent, where applicable:
+
+Frontend applications and major frontend layers
+
+Pages, modules, and major UI/application components
+
+Frontend-to-backend communication
+
+Backend application/services and major modules
+
+API routes/controllers/endpoints
+
+Authentication and authorization flow
+
+Business/service layers
+
+Database and major tables/models
+
+Relationships between important data domains
+
+File/document storage
+
+Background jobs, queues, workers, and scheduled tasks
+
+External APIs and third-party integrations
+
+Email, notification, payment, or other external services
+
+Caching or other infrastructure components
+
+Configuration/environment-dependent services
+
+Major data flows between components
+
+Use appropriate Mermaid diagram types such as flowchart, sequenceDiagram, or erDiagram where they provide meaningful technical information.
+
+At minimum, include a **high-level system architecture flowchart** showing:
+
+Frontend → API/Backend → Business Logic/Services → Database
+
+along with any other components or external services that actually exist in the project.
+
+Where useful, include additional Mermaid diagrams for:
+
+**System/component architecture**
+
+**Frontend → API → backend data flow**
+
+**Authentication/authorization flow**
+
+**Database entity relationships**
+
+**Important business workflows**
+
+Accuracy Requirements
+
+Base every diagram strictly on the actual project implementation.
+
+**Do not invent components, services, APIs, databases, integrations, or workflows.**
+
+Do not include generic architecture components merely because they are common in ERP systems.
+
+Use the actual names of applications, modules, services, APIs, models, databases, and integrations where identifiable.
+
+Clearly distinguish between components that actually exist and conceptual boundaries used only for explanation.
+
+Cross-reference important diagram components with their relevant source-code file paths in the surrounding documentation.
+
+If a component does not exist, do not add it to the diagram.
+
+If the implementation is unclear, document the uncertainty rather than making an assumption.
+
+The Mermaid diagrams should be detailed enough that a developer unfamiliar with the project can understand how the ERP's major components communicate and how data moves through the system.
+

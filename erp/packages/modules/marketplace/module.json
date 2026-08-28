@@ -1,0 +1,80 @@
+{
+  "api_routes": [
+    "/api/v1/marketplace/vendors",
+    "/api/v1/marketplace/vendors/{vendor_id}",
+    "/api/v1/marketplace/vendors/with-account",
+    "/api/v1/marketplace/vendors/{vendor_id}/status",
+    "/api/v1/marketplace/vendors/{vendor_id}/approve",
+    "/api/v1/marketplace/vendors/{vendor_id}/pause",
+    "/api/v1/marketplace/vendors/{vendor_id}/reactivate",
+    "/api/v1/marketplace/vendors/{vendor_id}/stop",
+    "/api/v1/marketplace/vendors/{vendor_id}/users",
+    "/api/v1/marketplace/vendors/{vendor_id}/products",
+    "/api/v1/marketplace/vendors/{vendor_id}/settlements",
+    "/api/v1/marketplace/commission-rules",
+    "/api/v1/vendor/me",
+    "/api/v1/vendor/products",
+    "/api/v1/vendor/orders",
+    "/api/v1/vendor/dashboard",
+    "/api/v1/vendor/settlements",
+    "/api/v1/vendor/ledger/overview",
+    "/api/v1/vendor/ledger/entries",
+    "/api/v1/vendor/stock/overview",
+    "/api/v1/vendor/stock/movements",
+    "/api/v1/vendor/sales",
+    "/api/v1/vendor/reports/sales",
+    "/api/v1/vendor/reports/stock",
+    "/api/v1/vendor/reports/settlements"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "catalog",
+    "customers",
+    "orders",
+    "inventory"
+  ],
+  "description": "Vendor onboarding, vendor-owned products, vendor order slices, settlements, and marketplace administration.",
+  "desktop_pages": [
+    "marketplace"
+  ],
+  "enabled_by_default": false,
+  "events": [
+    "marketplace.vendor_created",
+    "marketplace.vendor_approved",
+    "marketplace.product_assigned",
+    "marketplace.settlement_posted"
+  ],
+  "id": "marketplace",
+  "migrations": [
+    "202607010008_marketplace_accounting",
+    "202607010014_auth_ledger_vendor_inventory",
+    "202607010015_vendor_product_ownership_type"
+  ],
+  "name": "Marketplace",
+  "permissions": [
+    "vendors.view",
+    "vendors.manage",
+    "vendors.users.manage",
+    "vendors.products.manage",
+    "vendors.orders.view",
+    "vendors.assign_orders",
+    "vendors.settle",
+    "vendors.commissions.manage",
+    "vendor.profile.view",
+    "vendor.products.view",
+    "vendor.products.manage",
+    "vendor.orders.view",
+    "vendor.orders.manage",
+    "vendor.settlements.view",
+    "vendor.ledger.view",
+    "vendor.stock.view",
+    "vendor.reports.view",
+    "vendor.stock.manage"
+  ],
+  "release_note": "Vendor onboarding, approval, scoped portal access, inventory, and ledger APIs are implemented; deployment still requires migration and reconciliation.",
+  "release_status": "foundation_only",
+  "status": "implemented",
+  "version": "0.1.0"
+}

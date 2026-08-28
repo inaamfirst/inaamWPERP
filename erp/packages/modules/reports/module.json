@@ -1,0 +1,29 @@
+{
+  "api_routes": [
+    "/api/v1/reports/dashboard-summary",
+    "/api/v1/reports/sales",
+    "/api/v1/reports/inventory",
+    "/api/v1/reports/customers",
+    "/api/v1/reports/orders"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit"
+  ],
+  "description": "Reporting, dashboards, KPIs, exports, and future analytics foundation.",
+  "desktop_pages": [],
+  "enabled_by_default": true,
+  "events": [
+    "reports.generated"
+  ],
+  "id": "reports",
+  "migrations": [],
+  "name": "Reports",
+  "permissions": [
+    "reports.view",
+    "reports.export"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

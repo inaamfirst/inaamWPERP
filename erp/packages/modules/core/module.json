@@ -1,0 +1,30 @@
+{
+  "api_routes": [
+    "/api/v1/health",
+    "/api/v1/modules",
+    "/api/v1/setup/status",
+    "/api/v1/setup/first-use"
+  ],
+  "dependencies": [],
+  "description": "Core runtime, configuration, module registry, database foundation, setup, and health endpoints.",
+  "desktop_pages": [
+    "system.status",
+    "system.modules"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "core.started",
+    "core.health_checked"
+  ],
+  "id": "core",
+  "migrations": [
+    "202607010001_foundation_schema"
+  ],
+  "name": "Core ERP",
+  "permissions": [
+    "core.view_health",
+    "core.view_modules"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

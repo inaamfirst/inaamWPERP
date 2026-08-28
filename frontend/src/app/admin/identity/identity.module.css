@@ -1,0 +1,196 @@
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  margin-bottom: var(--space-5);
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-muted);
+  width: fit-content;
+}
+
+.tab {
+  min-width: 7rem;
+  min-height: var(--control-md);
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--brand-700);
+  box-shadow: var(--shadow-sm);
+}
+
+.tab:focus-visible,
+.sectionTitle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.sectionTitle {
+  margin-bottom: var(--space-5);
+  color: var(--text);
+  font-size: var(--text-xl);
+  letter-spacing: -0.02em;
+}
+
+.form,
+.roleForm {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 54rem;
+}
+
+.roleForm {
+  max-width: none;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-md);
+  color: var(--text-subtle);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.checkboxRow input,
+.permissionChoice input {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  accent-color: var(--brand-600);
+}
+
+.fieldset,
+.permissionFieldset {
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.fieldset legend,
+.permissionFieldset legend {
+  padding-inline: var(--space-2);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.roleGrid,
+.vendorGrid,
+.permissionsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+}
+
+.vendorGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.warning {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid #fecdd3;
+  border-left-width: 4px;
+  border-radius: var(--radius-md);
+  background: var(--danger-50);
+  color: var(--danger-700);
+  line-height: 1.5;
+}
+
+.roleName {
+  max-width: 28rem;
+}
+
+.permissionFieldset > p {
+  margin: 0 0 var(--space-4);
+}
+
+.permissionsGrid {
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+}
+
+.permissionChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-height: 5rem;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) ease, background var(--duration-fast) ease;
+}
+
+.permissionChoice:hover {
+  border-color: var(--brand-200);
+}
+
+.permissionChoiceSelected {
+  border-color: var(--brand-200);
+  background: var(--brand-50);
+}
+
+.permissionChoice span {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.permissionChoice strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.permissionChoice small {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+@media (max-width: 767px) {
+  .tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1;
+  }
+
+  .vendorGrid,
+  .permissionsGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .fieldset,
+  .permissionFieldset {
+    padding: var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .permissionChoice {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .tab[aria-selected="true"],
+  .permissionChoiceSelected {
+    outline: 2px solid CanvasText;
+  }
+}

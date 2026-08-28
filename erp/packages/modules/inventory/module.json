@@ -1,0 +1,34 @@
+{
+  "api_routes": [
+    "/api/v1/inventory/warehouses",
+    "/api/v1/inventory/stock-movements",
+    "/api/v1/inventory/stock"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "catalog"
+  ],
+  "description": "Warehouses, stock balances, stock movements, transfers, returns, damage, and low-stock alerts.",
+  "desktop_pages": [
+    "inventory"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "inventory.stock_moved",
+    "inventory.low_stock_detected"
+  ],
+  "id": "inventory",
+  "migrations": [
+    "202607010004_inventory"
+  ],
+  "name": "Inventory",
+  "permissions": [
+    "inventory.view",
+    "inventory.manage",
+    "inventory.transfer"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

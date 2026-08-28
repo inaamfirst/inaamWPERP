@@ -1,0 +1,27 @@
+{
+  "api_routes": [
+    "/api/v1/support/diagnostics",
+    "/api/v1/support/diagnostics.zip"
+  ],
+  "dependencies": [
+    "core",
+    "identity",
+    "audit"
+  ],
+  "description": "Support diagnostics, version visibility, environment summaries, and redacted support exports.",
+  "desktop_pages": [
+    "admin"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "support.diagnostics_exported"
+  ],
+  "id": "support",
+  "migrations": [],
+  "name": "Support Diagnostics",
+  "permissions": [
+    "support.view_diagnostics"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

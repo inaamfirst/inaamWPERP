@@ -1,0 +1,24 @@
+{
+  "api_routes": [
+    "/api/v1/audit-logs"
+  ],
+  "dependencies": [
+    "core",
+    "identity",
+    "tenancy"
+  ],
+  "description": "Activity logging and immutable audit trail foundation.",
+  "desktop_pages": [],
+  "enabled_by_default": true,
+  "events": [
+    "audit.recorded"
+  ],
+  "id": "audit",
+  "migrations": [],
+  "name": "Audit Logs",
+  "permissions": [
+    "audit.view"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

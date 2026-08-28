@@ -1,0 +1,30 @@
+{
+  "api_routes": [
+    "/api/v1/customers"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit"
+  ],
+  "description": "Customer profiles, addresses, notes, tags, order history, and credit foundation.",
+  "desktop_pages": [
+    "customers"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "customers.customer_created",
+    "customers.customer_updated"
+  ],
+  "id": "customers",
+  "migrations": [
+    "202607010003_catalog_customers"
+  ],
+  "name": "Customers",
+  "permissions": [
+    "customers.view",
+    "customers.manage"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

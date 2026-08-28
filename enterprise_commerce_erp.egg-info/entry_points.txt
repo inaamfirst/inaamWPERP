@@ -1,0 +1,5 @@
+[console_scripts]
+erp-api = erp.apps.api.__main__:main
+erp-desktop = erp.apps.desktop.__main__:main
+erp-license-server = erp.apps.license_server.__main__:main
+erp-worker = erp.apps.worker.__main__:main

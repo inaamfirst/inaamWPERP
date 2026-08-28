@@ -1,0 +1,34 @@
+{
+  "api_routes": [
+    "/api/v1/licensing/status",
+    "/api/v1/licensing/activate",
+    "/api/v1/licensing/validate",
+    "/api/v1/licensing/revoke"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit"
+  ],
+  "description": "License activation, plan enforcement, device identity, and update entitlement foundation.",
+  "desktop_pages": [
+    "admin"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "licensing.activated",
+    "licensing.revoked",
+    "licensing.expired"
+  ],
+  "id": "licensing",
+  "migrations": [],
+  "name": "Licensing",
+  "permissions": [
+    "licensing.view",
+    "licensing.manage"
+  ],
+  "release_note": "The licensing service is foundation-only pending durable service operations.",
+  "release_status": "foundation_only",
+  "status": "implemented",
+  "version": "0.1.0"
+}

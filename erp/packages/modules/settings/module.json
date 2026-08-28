@@ -1,0 +1,26 @@
+{
+  "api_routes": [
+    "/api/v1/settings"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy"
+  ],
+  "description": "System, company, connector, and desktop settings.",
+  "desktop_pages": [
+    "settings"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "settings.changed"
+  ],
+  "id": "settings",
+  "migrations": [],
+  "name": "Settings",
+  "permissions": [
+    "settings.view",
+    "settings.manage"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

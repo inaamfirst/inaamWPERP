@@ -1,0 +1,16 @@
+venv/
+.venv/
+node_modules/
+.next/
+__pycache__/
+build_output/
+release_builds/
+_release_phase5/
+.restore_tmp/
+.tmp.driveupload/
+$tmp/
+*.7z*
+*.tmp
+*.db
+*.sqlite3
+.env

@@ -1,0 +1,37 @@
+{
+  "api_routes": [
+    "/api/v1/orders"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "catalog",
+    "customers",
+    "inventory"
+  ],
+  "description": "Order lifecycle, order items, payments, status history, returns, cancellations, and refunds.",
+  "desktop_pages": [
+    "orders"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "orders.order_created",
+    "orders.status_changed"
+  ],
+  "id": "orders",
+  "migrations": [
+    "202607010005_orders"
+  ],
+  "name": "Orders",
+  "permissions": [
+    "orders.view",
+    "orders.manage",
+    "orders.change_status",
+    "delivery.manage",
+    "delivery.view_assigned",
+    "delivery.update_assigned"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

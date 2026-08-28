@@ -1,0 +1,1 @@
+/bin/bash /home/YOURUSERNAME/enterprise-commerce-erp/deploy/pythonanywhere/run_asgi.sh

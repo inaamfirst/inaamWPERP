@@ -1,0 +1,74 @@
+{
+  "api_routes": [
+    "/api/v1/accounting/accounts",
+    "/api/v1/accounting/accounts/{account_id}",
+    "/api/v1/accounting/periods",
+    "/api/v1/accounting/periods/{period_id}",
+    "/api/v1/accounting/journal-entries",
+    "/api/v1/accounting/journal-entries/{entry_id}",
+    "/api/v1/accounting/vendor-ledger",
+    "/api/v1/accounting/cash-books",
+    "/api/v1/accounting/bank-accounts",
+    "/api/v1/accounting/expenses",
+    "/api/v1/ledger/overview",
+    "/api/v1/ledger/accounts",
+    "/api/v1/ledger/periods",
+    "/api/v1/ledger/journals",
+    "/api/v1/ledger/journals/{journal_id}",
+    "/api/v1/ledger/journals/{journal_id}/reverse",
+    "/api/v1/ledger/trial-balance",
+    "/api/v1/ledger/reports/profit-loss",
+    "/api/v1/ledger/reports/balance-sheet",
+    "/api/v1/ledger/reports/cash-flow",
+    "/api/v1/ledger/reports/vendor-payables",
+    "/api/v1/ledger/reports/inventory",
+    "/api/v1/ledger/reconciliation",
+    "/api/v1/ledger/vendors/{vendor_id}/overview",
+    "/api/v1/ledger/vendors/{vendor_id}/ledger",
+    "/api/v1/ledger/vendors/{vendor_id}/stock",
+    "/api/v1/ledger/vendors/{vendor_id}/orders",
+    "/api/v1/ledger/vendors/{vendor_id}/sales",
+    "/api/v1/ledger/vendors/{vendor_id}/settlements",
+    "/api/v1/ledger/vendors/{vendor_id}/audit",
+    "/api/v1/ledger/export/journals.csv"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "orders",
+    "marketplace"
+  ],
+  "description": "Chart of accounts, journal entries, accounting periods, vendor ledger, and settlement posting foundations.",
+  "desktop_pages": [
+    "accounting"
+  ],
+  "enabled_by_default": false,
+  "events": [
+    "accounting.journal_posted",
+    "accounting.period_locked",
+    "accounting.vendor_ledger_posted"
+  ],
+  "id": "accounting",
+  "migrations": [
+    "202607010008_marketplace_accounting",
+    "202607010014_auth_ledger_vendor_inventory"
+  ],
+  "name": "Accounting",
+  "permissions": [
+    "accounting.view",
+    "accounting.post",
+    "accounting.reconcile",
+    "accounting.reports",
+    "accounting.manage_accounts",
+    "ledger.view",
+    "ledger.post",
+    "ledger.reverse",
+    "ledger.manage_periods",
+    "ledger.export"
+  ],
+  "release_note": "The immutable double-entry ledger is authoritative for new postings; legacy accounting remains a reconciled compatibility projection.",
+  "release_status": "foundation_only",
+  "status": "implemented",
+  "version": "0.1.0"
+}

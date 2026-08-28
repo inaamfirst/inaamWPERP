@@ -1,0 +1,39 @@
+{
+  "api_routes": [
+    "/api/v1/woocommerce/config",
+    "/api/v1/woocommerce/test-connection",
+    "/api/v1/woocommerce/sync",
+    "/api/v1/woocommerce/sync-runs",
+    "/api/v1/woocommerce/conflicts",
+    "/api/v1/woocommerce/conflicts/{conflict_id}/resolve",
+    "/api/v1/woocommerce/webhooks"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "catalog",
+    "inventory",
+    "customers",
+    "orders"
+  ],
+  "description": "WooCommerce connector foundation for idempotent two-way sync and webhook processing.",
+  "desktop_pages": [
+    "woocommerce"
+  ],
+  "enabled_by_default": false,
+  "events": [
+    "woocommerce.webhook_received",
+    "woocommerce.sync_requested"
+  ],
+  "id": "woocommerce",
+  "migrations": [],
+  "name": "WooCommerce Connector",
+  "permissions": [
+    "woocommerce.view",
+    "woocommerce.configure",
+    "woocommerce.sync"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

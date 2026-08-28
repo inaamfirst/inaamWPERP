@@ -1,0 +1,168 @@
+.loadingState {
+  min-height: 15rem;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 3px solid var(--border-subtle);
+  border-top-color: var(--brand-600);
+  border-radius: 50%;
+  animation: spin var(--duration-slow) linear infinite;
+}
+
+.skeleton {
+  display: block;
+  min-height: 1rem;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface-muted) 20%, var(--surface-raised) 45%, var(--surface-muted) 70%);
+  background-size: 240% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.feedbackState {
+  width: min(100%, 38rem);
+  min-height: 22rem;
+  margin: auto;
+  padding: var(--space-8) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  text-align: center;
+}
+
+.feedbackState > svg {
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: var(--space-3);
+  box-sizing: content-box;
+  color: var(--brand-700);
+  background: var(--brand-50);
+  border-radius: var(--radius-lg);
+}
+
+.feedbackState h1,
+.feedbackState h2 { font-size: var(--text-xl); letter-spacing: -0.025em; }
+.feedbackState p { color: var(--text-muted); line-height: 1.65; }
+
+.primaryButton,
+.secondaryButton,
+.dangerButton {
+  min-height: var(--control-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 750;
+  cursor: pointer;
+}
+.primaryButton { color: white; background: var(--brand-600); }
+.primaryButton:hover { background: var(--brand-700); }
+.secondaryButton { color: var(--text); background: var(--surface); border-color: var(--border); }
+.secondaryButton:hover { background: var(--surface-muted); }
+.dangerButton { color: white; background: var(--danger-600); }
+.dangerButton:hover { background: var(--danger-700); }
+.primaryButton svg, .secondaryButton svg, .dangerButton svg { width: 1rem; height: 1rem; }
+
+.pageHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+.pageHeader h1 { margin: 0; font-size: clamp(1.55rem, 2.4vw, 2.25rem); letter-spacing: -0.04em; }
+.eyebrow { margin-bottom: var(--space-2); color: var(--brand-700); font-size: var(--text-xs); font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; }
+.pageDescription { max-width: 48rem; margin-top: var(--space-2); color: var(--text-muted); line-height: 1.6; }
+.pageActions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+.toastRegion {
+  position: fixed;
+  z-index: 300;
+  right: max(var(--space-4), env(safe-area-inset-right));
+  bottom: max(var(--space-4), env(safe-area-inset-bottom));
+  width: min(24rem, calc(100vw - var(--space-8)));
+  display: grid;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.toast {
+  min-height: var(--touch-target);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--brand-600);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+}
+.toast > svg { width: 1.15rem; height: 1.15rem; color: var(--brand-600); }
+.toast button { width: var(--touch-target); height: var(--touch-target); display: grid; place-items: center; margin: calc(var(--space-2) * -1); border: 0; color: var(--text-muted); background: transparent; border-radius: var(--radius-sm); cursor: pointer; }
+.toast button svg { width: 1.1rem; }
+.toast_success { border-left-color: var(--success-600); }
+.toast_success > svg { color: var(--success-600); }
+.toast_error { border-left-color: var(--danger-600); }
+.toast_error > svg { color: var(--danger-600); }
+
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  padding: var(--space-4);
+  display: grid;
+  place-items: center;
+  background: rgb(15 23 42 / 55%);
+  backdrop-filter: blur(3px);
+}
+.dialog {
+  position: relative;
+  width: min(100%, 30rem);
+  padding: var(--space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+}
+.dialog h2 { padding-right: var(--space-8); font-size: var(--text-xl); letter-spacing: -0.025em; }
+.dialog p { margin-top: var(--space-2); color: var(--text-muted); line-height: 1.6; }
+.dialogClose { position: absolute; top: var(--space-3); right: var(--space-3); width: var(--touch-target); height: var(--touch-target); display: grid; place-items: center; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--text-muted); cursor: pointer; }
+.dialogClose svg { width: 1.2rem; }
+.dialogIcon, .dialogDangerIcon { width: 2.75rem; height: 2.75rem; display: grid; place-items: center; margin-bottom: var(--space-4); color: var(--warning-700); background: var(--warning-50); border-radius: var(--radius-md); }
+.dialogDangerIcon { color: var(--danger-700); background: var(--danger-50); }
+.dialogIcon svg, .dialogDangerIcon svg { width: 1.25rem; }
+.dialogActions { margin-top: var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-2); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { to { background-position-x: -240%; } }
+
+@media (max-width: 479px) {
+  .pageHeader { align-items: stretch; flex-direction: column; }
+  .pageActions > * { flex: 1; }
+  .dialog { padding: var(--space-5); }
+  .dialogActions { flex-direction: column-reverse; }
+  .dialogActions button { width: 100%; }
+  .toastRegion { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .skeleton { animation-duration: 0.001ms; animation-iteration-count: 1; }
+}

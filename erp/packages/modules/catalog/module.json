@@ -1,0 +1,34 @@
+{
+  "api_routes": [
+    "/api/v1/catalog/categories",
+    "/api/v1/catalog/brands",
+    "/api/v1/catalog/products",
+    "/api/v1/catalog/products/{product_id}/permanent"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit"
+  ],
+  "description": "Products, variants, categories, brands, pricing metadata, images, SEO, SKU, and barcode foundation.",
+  "desktop_pages": [
+    "products"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "catalog.product_created",
+    "catalog.product_updated",
+    "catalog.product_permanently_deleted"
+  ],
+  "id": "catalog",
+  "migrations": [
+    "202607010003_catalog_customers"
+  ],
+  "name": "Products and Catalog",
+  "permissions": [
+    "catalog.view",
+    "catalog.manage"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

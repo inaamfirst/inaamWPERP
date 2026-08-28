@@ -1,0 +1,87 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Quality gate
+        shell: pwsh
+        run: .\scripts\check.ps1
+      - name: Packaging config smoke
+        shell: pwsh
+        run: |
+          if (-not (Test-Path deploy\pyinstaller\erp-api.spec)) { exit 1 }
+          if (-not (Test-Path deploy\pyinstaller\erp-worker.spec)) { exit 1 }
+          if (-not (Test-Path deploy\pyinstaller\erp-desktop.spec)) { exit 1 }
+          if (-not (Test-Path deploy\inno\installer.iss)) { exit 1 }
+          if (-not (Test-Path deploy\windows\env.production.example)) { exit 1 }
+          if (-not (Test-Path deploy\windows\migrate_database.ps1)) { exit 1 }
+          if (-not (Test-Path deploy\windows\preflight_production.ps1)) { exit 1 }
+          if (-not (Test-Path deploy\windows\install_managed_tasks.ps1)) { exit 1 }
+          if (-not (Test-Path scripts\smoke_package.ps1)) { exit 1 }
+      - name: Package integration smoke
+        shell: pwsh
+        run: |
+          python -m pip install -e ".[build]"
+          .\scripts\build_package.ps1 -SkipChecks
+
+  postgres-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: erp_migration_tests
+          POSTGRES_USER: erp_test
+          POSTGRES_PASSWORD: erp_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U erp_test -d erp_migration_tests"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ERP_TEST_POSTGRES_URL: postgresql+psycopg://erp_test:erp_test_password@127.0.0.1:5432/erp_migration_tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install migration test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run PostgreSQL migration tests
+        run: pytest tests/test_migrations.py -q -k postgresql
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Production build
+        run: npm run build

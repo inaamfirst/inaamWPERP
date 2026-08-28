@@ -1,0 +1,34 @@
+{
+  "api_routes": [
+    "/api/v1/whatsapp/templates",
+    "/api/v1/whatsapp/messages"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit",
+    "customers",
+    "orders"
+  ],
+  "description": "Adapter foundation for the existing local Windows WhatsApp automation service.",
+  "desktop_pages": [],
+  "enabled_by_default": false,
+  "events": [
+    "whatsapp.message_queued",
+    "whatsapp.message_sent"
+  ],
+  "id": "whatsapp",
+  "migrations": [
+    "202607010006_whatsapp_notifications"
+  ],
+  "name": "WhatsApp Connector",
+  "permissions": [
+    "whatsapp.view",
+    "whatsapp.configure",
+    "whatsapp.send"
+  ],
+  "release_note": "WhatsApp delivery is foundation-only and disabled by default in production.",
+  "release_status": "foundation_only",
+  "status": "implemented",
+  "version": "0.1.0"
+}

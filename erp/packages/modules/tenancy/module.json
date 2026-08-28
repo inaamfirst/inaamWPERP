@@ -1,0 +1,28 @@
+{
+  "api_routes": [
+    "/api/v1/tenancy/companies",
+    "/api/v1/tenancy/companies/{company_id}"
+  ],
+  "dependencies": [
+    "core",
+    "identity"
+  ],
+  "description": "Companies, tenant boundaries, and company-scoped configuration.",
+  "desktop_pages": [
+    "admin"
+  ],
+  "enabled_by_default": true,
+  "events": [
+    "tenancy.company_created",
+    "tenancy.company_updated"
+  ],
+  "id": "tenancy",
+  "migrations": [],
+  "name": "Tenants and Companies",
+  "permissions": [
+    "tenancy.view_companies",
+    "tenancy.manage_companies"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

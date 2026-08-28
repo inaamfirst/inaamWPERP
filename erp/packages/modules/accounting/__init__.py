@@ -1,0 +1,2 @@
+"""Accounting module scaffold."""
+

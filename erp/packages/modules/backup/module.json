@@ -1,0 +1,28 @@
+{
+  "api_routes": [
+    "/api/v1/backup/sqlite",
+    "/api/v1/backup/restore-plan"
+  ],
+  "dependencies": [
+    "core",
+    "tenancy",
+    "audit"
+  ],
+  "description": "Backup, restore, export, and disaster recovery foundation.",
+  "desktop_pages": [],
+  "enabled_by_default": true,
+  "events": [
+    "backup.created",
+    "backup.restored"
+  ],
+  "id": "backup",
+  "migrations": [],
+  "name": "Backup and Restore",
+  "permissions": [
+    "backup.view",
+    "backup.create",
+    "backup.restore"
+  ],
+  "status": "implemented",
+  "version": "0.1.0"
+}

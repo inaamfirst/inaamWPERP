@@ -1,0 +1,47 @@
+compare
+1
+Create a file in the project root named `Source Code.md`.
+First, inspect the entire project folder and understand the ERP software thoroughly. Then document the current implementation in `Source Code.md`.
+Include, as applicable:
+
+- Overall ERP purpose and functionality
+- Complete project/module structure
+- All major features and workflows
+- Frontend architecture, pages, components, and UI structure
+- Backend architecture, services, APIs, routes, and business logic
+- Database structure, tables/models, relationships, and migrations
+- Authentication, authorization, roles, and permissions
+- Integrations and external services
+- Configuration and environment variables (document variable names and purposes, but NEVER include secret values)
+- Important dependencies and their purposes
+- Data flow between frontend, backend, and database
+- Key business rules and validations
+- Background jobs, queues, scheduled tasks, or automation
+- File storage and document handling
+- Reporting, dashboards, notifications, and exports
+- Error handling and logging
+- Deployment and build configuration
+- Important scripts and commands
+- Tests and testing structure
+- Important architectural decisions and conventions
+- Known limitations, TODOs, and incomplete areas
+- Any other important implementation details needed for another developer to understand and maintain the ERP
+  Base the documentation strictly on what actually exists in the project. Do not invent functionality or assumptions.
+  For important functionality, include references to the relevant file paths and, where useful, the specific classes, functions, components, APIs, or database models responsible for it.
+  Keep the documentation organized with clear headings and tables where useful. Make it detailed enough that a developer who has never seen this project can use `Source Code.md` as a technical reference for understanding the ERP.
+  Do not modify application source code or configuration files. Only create/update `Source Code.md`.
+  2
+  Create a file named DOCUMENTATION.md in the root directory. Analyze the entire project folder and write a comprehensive technical documentation in Markdown format including:
+
+Project Overview & Core Business Purpose
+Tech Stack (Languages, Frameworks, Database, External APIs)
+Project Directory Structure & Key Files
+Core Modules & Features Breakdown
+Database Schema & Data Models
+How to Install, Configure, and Run the Project
+Create a file named ARCHITECTURE.md detailing the system architecture of this ERP project. Include:
+
+High-level System Architecture Diagram (using Mermaid syntax)
+Backend & Frontend Route/API Mapping
+Key Dependencies & Third-Party Integrations
+Known Constraints, Environment Variables, and Security Roless

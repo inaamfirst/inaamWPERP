@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enterprise-commerce-erp"
+version = "0.1.0"
+description = "Production foundation for a modular commerce ERP with WooCommerce integration."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.13.1",
+    "cryptography>=43.0.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "keyring>=25.2.0",
+    "psycopg[binary]>=3.1.19",
+    "pywebpush>=2.0.0",
+    "pydantic-settings>=2.3.0",
+    "PySide6>=6.7.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0.1",
+    "SQLAlchemy>=2.0.30",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.5.0",
+]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+erp-api = "erp.apps.api.__main__:main"
+erp-desktop = "erp.apps.desktop.__main__:main"
+erp-license-server = "erp.apps.license_server.__main__:main"
+erp-worker = "erp.apps.worker.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["erp*"]
+
+[tool.setuptools.package-data]
+"*" = ["module.json"]
+"erp.apps.api" = ["static/*.css"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["_release_phase5", "sim.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
