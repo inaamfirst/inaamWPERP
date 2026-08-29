@@ -305,7 +305,15 @@ certbot --nginx --non-interactive --agree-tos --redirect \
 systemctl reload nginx
 
 echo "==> Installing off-server backup timer (disabled until credentials are configured)"
-install -m 0750 -o root -g root "$APP_ROOT/deploy/linux/backup_postgres.sh" /usr/local/sbin/inaam-erp-backup
+if [[ -f "$APP_ROOT/deploy/linux/backup_postgres.sh" ]]; then
+  install -m 0750 -o root -g root "$APP_ROOT/deploy/linux/backup_postgres.sh" /usr/local/sbin/inaam-erp-backup
+else
+  # The pinned application commit predates these deployment-only helpers.
+  curl -fsSL https://raw.githubusercontent.com/inaamfirst/inaamWPERP/main/deploy/linux/backup_postgres.sh \
+    -o /usr/local/sbin/inaam-erp-backup
+  chown root:root /usr/local/sbin/inaam-erp-backup
+  chmod 0750 /usr/local/sbin/inaam-erp-backup
+fi
 cat > "$CONFIG_DIR/backup.env.example" <<EOF
 ERP_DATABASE_URL=postgresql://$DB_USER:$DB_PASSWORD@127.0.0.1:5432/$DB_NAME
 S3_ENDPOINT=https://sgp1.digitaloceanspaces.com
