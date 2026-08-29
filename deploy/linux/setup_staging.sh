@@ -168,6 +168,11 @@ printf '%s\n' "$BOOTSTRAP_TOKEN" > /root/inaam-erp-bootstrap-token
 chmod 0600 /root/inaam-erp-bootstrap-token
 
 echo "==> Creating Python environment and building frontend"
+if [[ -d "$APP_ROOT/.venv" ]]; then
+  # A previous interrupted run can leave root-owned editable-install metadata.
+  # The virtual environment is disposable; application data lives in STATE_ROOT.
+  rm -rf "$APP_ROOT/.venv"
+fi
 runuser -u "$APP_USER" -- "$PYTHON_BIN" -m venv "$APP_ROOT/.venv"
 runuser -u "$APP_USER" -- "$APP_ROOT/.venv/bin/python" -m pip install --upgrade pip
 runuser -u "$APP_USER" -- env ERP_CONFIG_FILE="$ENV_FILE" \
