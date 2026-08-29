@@ -185,6 +185,27 @@ def _direct_setup(db: Session, suffix: str = ""):
     return setup_first_use(db, payload, settings=Settings(env="development"))
 
 
+def test_first_use_reuses_permissions_seeded_by_migrations(
+    api_harness: ApiHarness,
+) -> None:
+    with api_harness.session_factory() as db:
+        db.add(
+            Permission(
+                id=new_uuid(),
+                key="catalog.manage",
+                description="Permission seeded by a migration.",
+            )
+        )
+        db.commit()
+
+    response = api_harness.client.post(
+        "/api/v1/setup/first-use",
+        json=_setup_payload("migrated-permissions"),
+    )
+
+    assert response.status_code == 200, response.text
+
+
 def test_atomic_concurrent_refresh_has_one_winner_and_reuse_revokes_family(
     concurrent_database: ConcurrentDatabase,
 ) -> None:

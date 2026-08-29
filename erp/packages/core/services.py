@@ -628,12 +628,11 @@ def setup_first_use(
     db.add_all([company, user, admin_role])
     db.flush()
 
-    permission_rows: list[Permission] = []
-    for key in declared_permissions():
-        permission = Permission(key=key, description=f"Permission: {key}")
-        db.add(permission)
-        permission_rows.append(permission)
-    db.flush()
+    # Migrations may already have created the global permission catalogue.
+    # Reuse those rows (and add only any newly declared permissions) instead
+    # of inserting duplicate keys during first-use setup.
+    permission_catalog = ensure_declared_permission_rows(db)
+    permission_rows = [permission_catalog[key] for key in declared_permissions()]
 
     db.add(UserRole(user_id=user.id, role_id=admin_role.id))
     db.add_all(
