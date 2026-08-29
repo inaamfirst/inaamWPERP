@@ -37,7 +37,7 @@ apt-get install -y \
   ca-certificates curl git build-essential libpq-dev openssl \
   python3 python3-venv python3-pip \
   postgresql postgresql-contrib postgresql-client \
-  nginx certbot python3-certbot-nginx ufw awscli
+  nginx certbot python3-certbot-nginx ufw unzip
 
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]]; then
   echo "==> Installing Node.js 20 LTS"
@@ -46,6 +46,20 @@ if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.spl
 fi
 
 NPM_BIN="$(command -v npm)"
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "==> Installing AWS CLI v2 (used for S3-compatible Spaces backups)"
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    echo "This installer currently supports AWS CLI on x86_64 only." >&2
+    exit 1
+  fi
+  AWS_TMP="$(mktemp -d)"
+  curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+    -o "$AWS_TMP/awscliv2.zip"
+  unzip -q "$AWS_TMP/awscliv2.zip" -d "$AWS_TMP"
+  "$AWS_TMP/aws/install" --update
+  rm -rf "$AWS_TMP"
+fi
 
 echo "==> Creating service account and directories"
 if ! id "$APP_USER" >/dev/null 2>&1; then
