@@ -100,6 +100,7 @@ def test_production_templates_do_not_ship_real_secrets() -> None:
     assert "ERP_WORKER_HEARTBEAT_FILE=" in template
     assert "dev-only-change-me" not in template
 
+
     migration_launcher = Path("deploy/windows/migrate_database.ps1").read_text(encoding="utf-8")
     assert "ERP_MIGRATE_ONLY" in migration_launcher
 
@@ -153,6 +154,17 @@ def test_production_templates_do_not_ship_real_secrets() -> None:
     assert "Forbidden file(s)" in upload_zip_script
     assert ".wwebjs_auth" in upload_zip_script
     assert "Compress-Archive" in upload_zip_script
+
+
+def test_linux_staging_environment_values_are_shell_and_systemd_safe() -> None:
+    installer = Path("deploy/linux/setup_staging.sh").read_text(encoding="utf-8")
+
+    assert "REPO_REF=\"${REPO_REF:-7e8e5f9}\"" in installer
+    assert "ERP_APP_NAME='Enterprise Commerce ERP'" in installer
+    assert "ERP_TRUSTED_HOSTS='[\"$ERP_HOSTNAME\"]'" in installer
+    assert "ERP_TRUSTED_PROXY_IPS='[\"127.0.0.1\",\"::1\"]'" in installer
+    assert "ERP_CORS_ORIGINS='[]'" in installer
+    assert Path("deploy/linux/recover_staging_login.sh").exists()
 
 
 def test_ci_runs_local_quality_gate_and_packaging_smoke() -> None:

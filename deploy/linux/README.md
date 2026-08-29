@@ -14,7 +14,7 @@ chmod 700 /root/setup_staging.sh
 CERTBOT_EMAIL='your-email@example.com' /root/setup_staging.sh
 ```
 
-The script deploys `main` at commit `faef8aa`, creates a fresh local PostgreSQL
+The script deploys `main` at commit `7e8e5f9`, creates a fresh local PostgreSQL
 database, installs the FastAPI API, Next.js frontend, worker, Nginx, HTTPS, and
 UFW rules. It generates all application/database secrets and stores the one-time
 bootstrap token in `/root/inaam-erp-bootstrap-token` with mode 600.
@@ -36,6 +36,24 @@ cat /root/inaam-erp-bootstrap-token
 Call the existing `POST /api/v1/setup/first-use` endpoint over HTTPS with a new
 administrator username and password. Do not put the password in this file or in
 source control. The endpoint can only complete once.
+
+## Recover a staging login
+
+Do not source `staging.env` in a shell: it is a systemd environment file and
+contains JSON values. If a staging administrator cannot sign in, download the
+recovery helper and enter the password only at its hidden terminal prompt:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/inaamfirst/inaamWPERP/main/deploy/linux/recover_staging_login.sh \
+  -o /root/recover_staging_login.sh
+chmod 700 /root/recover_staging_login.sh
+/root/recover_staging_login.sh --probe
+```
+
+The helper checks the direct API and browser-backend-for-frontend (BFF) login
+paths without printing tokens. Use `--reset-password` only if the direct API
+probe rejects the password; it resets the `admin` password and clears login
+throttles, but leaves all ERP data unchanged.
 
 ## Off-server PostgreSQL backups
 
