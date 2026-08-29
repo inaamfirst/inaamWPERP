@@ -14,7 +14,7 @@ chmod 700 /root/setup_staging.sh
 CERTBOT_EMAIL='your-email@example.com' /root/setup_staging.sh
 ```
 
-The script deploys `main` at commit `7e8e5f9`, creates a fresh local PostgreSQL
+The script deploys the current `main` branch, creates a fresh local PostgreSQL
 database, installs the FastAPI API, Next.js frontend, worker, Nginx, HTTPS, and
 UFW rules. It generates all application/database secrets and stores the one-time
 bootstrap token in `/root/inaam-erp-bootstrap-token` with mode 600.

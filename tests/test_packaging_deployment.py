@@ -159,7 +159,7 @@ def test_production_templates_do_not_ship_real_secrets() -> None:
 def test_linux_staging_environment_values_are_shell_and_systemd_safe() -> None:
     installer = Path("deploy/linux/setup_staging.sh").read_text(encoding="utf-8")
 
-    assert "REPO_REF=\"${REPO_REF:-7e8e5f9}\"" in installer
+    assert "REPO_REF=\"${REPO_REF:-main}\"" in installer
     assert "ERP_APP_NAME='Enterprise Commerce ERP'" in installer
     assert "ERP_TRUSTED_HOSTS='[\"$ERP_HOSTNAME\"]'" in installer
     assert "ERP_TRUSTED_PROXY_IPS='[\"127.0.0.1\",\"::1\"]'" in installer

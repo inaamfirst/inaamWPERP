@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { applyBackendOriginHeaders } from "@/lib/backend-forwarding";
 import { passthroughBackendResponse } from "@/lib/bff-response";
 
 const ACCESS_COOKIE = "erp_access";
@@ -71,6 +72,7 @@ async function handle(request: NextRequest, context: RouteContext): Promise<Next
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
+  applyBackendOriginHeaders(headers, process.env.ERP_API_BASE_URL);
   if (accessToken && endpoint !== "auth/login" && endpoint !== "auth/refresh") {
     headers.set("authorization", `Bearer ${accessToken}`);
   }
