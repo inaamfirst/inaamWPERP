@@ -55,6 +55,18 @@ paths without printing tokens. Use `--reset-password` only if the direct API
 probe rejects the password; it resets the `admin` password and clears login
 throttles, but leaves all ERP data unchanged.
 
+If the direct API probe succeeds but the BFF probe reports HTTP 400, run the
+following repair helper. It adds only `127.0.0.1` and `localhost` to the API's
+trusted-host list, then restarts the ERP services; it does not open a public
+port or alter database data.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/inaamfirst/inaamWPERP/main/deploy/linux/repair_staging_bff.sh \
+  -o /root/repair_staging_bff.sh
+chmod 700 /root/repair_staging_bff.sh
+/root/repair_staging_bff.sh
+```
+
 ## Off-server PostgreSQL backups
 
 Create a DigitalOcean Space (or another S3-compatible bucket), then create

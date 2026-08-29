@@ -161,10 +161,11 @@ def test_linux_staging_environment_values_are_shell_and_systemd_safe() -> None:
 
     assert "REPO_REF=\"${REPO_REF:-main}\"" in installer
     assert "ERP_APP_NAME='Enterprise Commerce ERP'" in installer
-    assert "ERP_TRUSTED_HOSTS='[\"$ERP_HOSTNAME\"]'" in installer
+    assert "ERP_TRUSTED_HOSTS='[\"$ERP_HOSTNAME\",\"127.0.0.1\",\"localhost\"]'" in installer
     assert "ERP_TRUSTED_PROXY_IPS='[\"127.0.0.1\",\"::1\"]'" in installer
     assert "ERP_CORS_ORIGINS='[]'" in installer
     assert Path("deploy/linux/recover_staging_login.sh").exists()
+    assert Path("deploy/linux/repair_staging_bff.sh").exists()
 
 
 def test_ci_runs_local_quality_gate_and_packaging_smoke() -> None:
