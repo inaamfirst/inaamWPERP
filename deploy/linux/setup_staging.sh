@@ -72,7 +72,7 @@ install -d -m 0750 -o root -g "$APP_USER" "$CONFIG_DIR"
 
 echo "==> Fetching repository at $REPO_REF"
 if [[ -d "$APP_ROOT/.git" ]]; then
-  git -C "$APP_ROOT" fetch --depth=50 origin main
+  git -c safe.directory="$APP_ROOT" -C "$APP_ROOT" fetch --depth=50 origin main
 else
   if [[ -e "$APP_ROOT" ]] && ! rmdir "$APP_ROOT" 2>/dev/null; then
     echo "$APP_ROOT exists and is not an empty Git checkout; refusing to overwrite it." >&2
@@ -80,8 +80,8 @@ else
   fi
   git clone --filter=blob:none "$REPO_URL" "$APP_ROOT"
 fi
-git -C "$APP_ROOT" fetch --depth=50 origin main
-git -C "$APP_ROOT" checkout --force "$REPO_REF"
+git -c safe.directory="$APP_ROOT" -C "$APP_ROOT" fetch --depth=50 origin main
+git -c safe.directory="$APP_ROOT" -C "$APP_ROOT" checkout --force "$REPO_REF"
 chown -R "$APP_USER:$APP_USER" "$APP_ROOT"
 
 echo "==> Creating PostgreSQL role and database"
