@@ -206,10 +206,7 @@ def create_order(
         raise ServiceError(422, "Order discount cannot exceed subtotal.")
     order.subtotal_minor = subtotal_minor
     order.total_minor = (
-        subtotal_minor
-        - payload.discount_minor
-        + payload.tax_minor
-        + payload.shipping_minor
+        subtotal_minor - payload.discount_minor + payload.tax_minor + payload.shipping_minor
     )
     order.payment_status = payment_status_for(order)
     db.add(
@@ -274,6 +271,14 @@ def change_order_status(
     db.add(history)
     db.flush()
     db.refresh(order)
+    if target == "refunded":
+        _reverse_order_finance_postings(
+            db,
+            company_id=scoped_company_id,
+            user_id=user_id,
+            order=order,
+            reason=payload.reason or "Order refunded.",
+        )
     from erp.packages.core.push_services import enqueue_order_status_changed
 
     enqueue_order_status_changed(
@@ -293,6 +298,155 @@ def change_order_status(
         metadata={"from_status": previous, "to_status": target},
     )
     return order
+
+
+def _reverse_order_finance_postings(
+    db: Session,
+    *,
+    company_id: str,
+    user_id: str,
+    order: Order,
+    reason: str,
+) -> None:
+    """Reverse all financial postings linked to a refunded order.
+
+    Reversals preserve a complete audit trail; they never rewrite an original
+    payment, vendor approval, or rider earning journal.
+    """
+
+    from erp.packages.core.db.models import LedgerJournal, VendorOrderItem
+    from erp.packages.core.finance_services import post_rider_adjustment
+    from erp.packages.core.ledger_services import reverse_journal
+    from erp.packages.core.schemas import RiderAdjustmentCreate
+
+    payments = list(
+        db.scalars(
+            select(Payment).where(
+                Payment.company_id == company_id,
+                Payment.order_id == order.id,
+                Payment.status == "paid",
+            )
+        ).all()
+    )
+    for payment in payments:
+        journal = db.scalar(
+            select(LedgerJournal).where(
+                LedgerJournal.company_id == company_id,
+                LedgerJournal.source_type == "payment",
+                LedgerJournal.source_id == payment.id,
+                LedgerJournal.status == "posted",
+            )
+        )
+        if journal is not None:
+            reverse_journal(
+                db,
+                company_id=company_id,
+                user_id=user_id,
+                journal_id=journal.id,
+                reason=reason,
+                idempotency_key=f"refund-payment:{payment.id}",
+            )
+        payment.status = "refunded"
+
+    settled_ids: set[str] = set()
+    vendor_items = list(
+        db.scalars(
+            select(VendorOrderItem).where(
+                VendorOrderItem.company_id == company_id,
+                VendorOrderItem.order_id == order.id,
+            )
+        ).all()
+    )
+    for item in vendor_items:
+        approval = db.scalar(
+            select(LedgerJournal).where(
+                LedgerJournal.company_id == company_id,
+                LedgerJournal.source_type == "vendor_approval",
+                LedgerJournal.source_id == item.id,
+                LedgerJournal.status == "posted",
+            )
+        )
+        if approval is not None:
+            reverse_journal(
+                db,
+                company_id=company_id,
+                user_id=user_id,
+                journal_id=approval.id,
+                reason=reason,
+                idempotency_key=f"refund-vendor-approval:{item.id}",
+            )
+        if item.settlement_id:
+            settled_ids.add(item.settlement_id)
+        if item.finance_status in {"eligible", "approved", "allocated", "paid"}:
+            item.finance_status = "reversed"
+            item.finance_reason = reason
+
+    for settlement_id in settled_ids:
+        settlement = db.scalar(
+            select(LedgerJournal).where(
+                LedgerJournal.company_id == company_id,
+                LedgerJournal.source_type == "settlement",
+                LedgerJournal.source_id == settlement_id,
+                LedgerJournal.status == "posted",
+            )
+        )
+        if settlement is not None:
+            reverse_journal(
+                db,
+                company_id=company_id,
+                user_id=user_id,
+                journal_id=settlement.id,
+                reason=reason,
+                idempotency_key=f"refund-settlement:{settlement_id}",
+            )
+
+    # A COD collection earns its rider once. A refund posts a matching
+    # deduction, even if a later rider payout now leaves a recoverable balance.
+    from erp.packages.core.db.models import CODCollection, RiderLedgerEntry
+
+    collections = list(
+        db.scalars(
+            select(CODCollection).where(
+                CODCollection.company_id == company_id,
+                CODCollection.order_id == order.id,
+                CODCollection.status == "reconciled",
+            )
+        ).all()
+    )
+    for collection in collections:
+        earning = db.scalar(
+            select(RiderLedgerEntry).where(
+                RiderLedgerEntry.company_id == company_id,
+                RiderLedgerEntry.rider_user_id == collection.rider_user_id,
+                RiderLedgerEntry.source_type == "cod_collection",
+                RiderLedgerEntry.source_id == collection.id,
+            )
+        )
+        if earning is not None:
+            post_rider_adjustment(
+                db,
+                company_id=company_id,
+                actor_user_id=user_id,
+                rider_user_id=collection.rider_user_id,
+                payload=RiderAdjustmentCreate(
+                    amount_minor=-earning.amount_minor,
+                    memo=f"Refund reversal: {reason}",
+                    idempotency_key=f"refund-rider-earning:{collection.id}",
+                ),
+            )
+
+    order.paid_minor = 0
+    order.payment_status = "refunded"
+    db.flush()
+    record_audit(
+        db,
+        action="orders.financial_postings_reversed",
+        company_id=company_id,
+        user_id=user_id,
+        entity_type="order",
+        entity_id=order.id,
+        metadata={"reason": reason, "payment_count": len(payments)},
+    )
 
 
 def record_payment(
@@ -335,6 +489,7 @@ def record_payment(
     db.refresh(payment)
     if payment.status == "paid":
         from erp.packages.core.accounting_services import post_order_payment_entry
+        from erp.packages.core.finance_services import refresh_vendor_finance_eligibility
 
         post_order_payment_entry(
             db,
@@ -343,6 +498,7 @@ def record_payment(
             order=order,
             payment=payment,
         )
+        refresh_vendor_finance_eligibility(db, company_id=scoped_company_id, order_id=order.id)
     from erp.packages.core.push_services import enqueue_payment_recorded
 
     enqueue_payment_recorded(

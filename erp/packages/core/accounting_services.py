@@ -19,7 +19,6 @@ from erp.packages.core.db.models import (
     Payment,
     VendorLedgerEntry,
     VendorOrderItem,
-    VendorProduct,
     VendorSettlement,
     new_uuid,
 )
@@ -208,9 +207,7 @@ def journal_entry_out(db: Session, entry: JournalEntry) -> JournalEntryOut:
 
 
 def ensure_default_accounts(db: Session, company_id: str) -> dict[str, Account]:
-    rows = list(
-        db.scalars(select(Account).where(Account.company_id == company_id)).all()
-    )
+    rows = list(db.scalars(select(Account).where(Account.company_id == company_id)).all())
     existing = {row.code: row for row in rows}
     for code, name, account_type in DEFAULT_ACCOUNTS:
         if code not in existing:
@@ -847,10 +844,18 @@ def post_order_payment_entry(
         )
         commission_total += item.commission_minor
 
+    # Legacy projections must also support partial payments. The authoritative
+    # vendor liability is deliberately created later by finance approval.
+    allocation_ratio = min(1.0, payment.amount_minor / max(1, order.total_minor))
+    vendor_payables = {
+        vendor_id: int(round(amount * allocation_ratio))
+        for vendor_id, amount in vendor_payables.items()
+    }
+    commission_total = int(round(commission_total * allocation_ratio))
     vendor_payable_total = sum(vendor_payables.values())
     remainder = payment.amount_minor - vendor_payable_total - commission_total
     if remainder < 0:
-        raise ServiceError(422, "Payment amount is smaller than vendor payout plus commission.")
+        raise ServiceError(422, "Payment allocation could not be balanced.")
 
     # Post to the authoritative ledger first. Ownership policy changes the
     # financial treatment while the legacy projection below preserves existing
@@ -861,91 +866,28 @@ def post_order_payment_entry(
     )
 
     ledger_accounts = ensure_default_ledger_accounts(db, company_id)
+    collection_rider_id = str(payment.metadata_json.get("rider_user_id") or "").strip()
+    cash_account_code = "1020" if collection_rider_id else "1000"
     authority_lines: list[LedgerLineCreate] = [
         LedgerLineCreate(
-            account_id=ledger_accounts["1000"].id,
+            account_id=ledger_accounts[cash_account_code].id,
             debit_minor=payment.amount_minor,
             currency=payment.currency,
             metadata={"order_id": order.id, "payment_id": payment.id},
         )
     ]
-    vendor_owned_payable: dict[str, int] = {}
-    company_owned_commission: dict[str, int] = {}
-    authority_commission_revenue = 0
-    authority_sales_revenue = 0
-    authority_commission_expense = 0
-    vendor_line_total = 0
-    for item in items:
-        vendor_line_total += item.line_total_minor
-        assignment = db.scalar(
-            select(VendorProduct).where(
-                VendorProduct.company_id == company_id,
-                VendorProduct.vendor_id == item.vendor_id,
-                VendorProduct.product_id == item.product_id,
-            )
+    # Customer collection is revenue; vendors only become a real liability after
+    # finance explicitly approves a successfully delivered, fully paid sale.
+    # This stops an uncollected, returned, or disputed COD order from inflating
+    # vendor payables. The legacy projection below is retained for historical
+    # compatibility but is not the authority for settlement eligibility.
+    authority_lines.append(
+        LedgerLineCreate(
+            account_id=ledger_accounts["4000"].id,
+            credit_minor=payment.amount_minor,
+            currency=payment.currency,
         )
-        # A direct legacy Product.vendor_id historically meant the vendor was
-        # owed VendorOrderItem.payable_minor. Preserve that treatment until an
-        # administrator creates an explicit VendorProduct ownership policy.
-        ownership = assignment.ownership_type if assignment else "vendor_owned"
-        if ownership in {"vendor_owned", "consignment"}:
-            vendor_owned_payable[item.vendor_id] = (
-                vendor_owned_payable.get(item.vendor_id, 0) + item.payable_minor
-            )
-            authority_commission_revenue += item.commission_minor
-            authority_sales_revenue += max(
-                0, item.line_total_minor - item.payable_minor - item.commission_minor
-            )
-        else:
-            authority_sales_revenue += item.line_total_minor
-            if item.commission_minor:
-                company_owned_commission[item.vendor_id] = (
-                    company_owned_commission.get(item.vendor_id, 0) + item.commission_minor
-                )
-                authority_commission_expense += item.commission_minor
-    authority_sales_revenue += max(0, payment.amount_minor - vendor_line_total)
-    for vendor_id, amount in sorted(vendor_owned_payable.items()):
-        authority_lines.append(
-            LedgerLineCreate(
-                account_id=ledger_accounts["2000"].id,
-                vendor_id=vendor_id,
-                credit_minor=amount,
-                currency=payment.currency,
-            )
-        )
-    for vendor_id, amount in sorted(company_owned_commission.items()):
-        authority_lines.append(
-            LedgerLineCreate(
-                account_id=ledger_accounts["2000"].id,
-                vendor_id=vendor_id,
-                credit_minor=amount,
-                currency=payment.currency,
-            )
-        )
-    if authority_commission_revenue:
-        authority_lines.append(
-            LedgerLineCreate(
-                account_id=ledger_accounts["3000"].id,
-                credit_minor=authority_commission_revenue,
-                currency=payment.currency,
-            )
-        )
-    if authority_sales_revenue:
-        authority_lines.append(
-            LedgerLineCreate(
-                account_id=ledger_accounts["4000"].id,
-                credit_minor=authority_sales_revenue,
-                currency=payment.currency,
-            )
-        )
-    if authority_commission_expense:
-        authority_lines.append(
-            LedgerLineCreate(
-                account_id=ledger_accounts["5100"].id,
-                debit_minor=authority_commission_expense,
-                currency=payment.currency,
-            )
-        )
+    )
     post_journal(
         db,
         company_id=company_id,
@@ -956,7 +898,11 @@ def post_order_payment_entry(
             idempotency_key=f"payment:{payment.id}",
             memo=f"Payment for order {order.order_number}",
             posted_at=payment.paid_at or utcnow(),
-            metadata={"order_id": order.id, "payment_id": payment.id},
+            metadata={
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "rider_user_id": collection_rider_id or None,
+            },
             lines=authority_lines,
         ),
         project_legacy=False,
@@ -1013,7 +959,12 @@ def post_order_payment_entry(
             source_type="payment",
             source_id=payment.id,
             memo=f"Vendor payable for order {order.order_number}",
-            metadata={"order_id": order.id, "payment_id": payment.id},
+            metadata={
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "finance_status": "pending_approval",
+                "legacy_projection": True,
+            },
         )
     return entry
 
@@ -1128,9 +1079,7 @@ def post_vendor_settlement_entry(
     return entry
 
 
-def list_cashes_and_banks_and_expenses(
-    db: Session, company_id: str | None
-) -> dict[str, list[Any]]:
+def list_cashes_and_banks_and_expenses(db: Session, company_id: str | None) -> dict[str, list[Any]]:
     return {
         "cash_books": list_cash_books(db, company_id),
         "bank_accounts": list_bank_accounts(db, company_id),

@@ -30,7 +30,9 @@
     "orders.change_status",
     "delivery.manage",
     "delivery.view_assigned",
-    "delivery.update_assigned"
+    "delivery.update_assigned",
+    "rider.finance.view",
+    "rider.finance.submit"
   ],
   "status": "implemented",
   "version": "0.1.0"

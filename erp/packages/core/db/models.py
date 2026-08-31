@@ -455,9 +455,7 @@ class VendorProduct(Base, TimestampMixin):
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
     vendor_id: Mapped[str] = mapped_column(ForeignKey("vendors.id"), nullable=False)
     product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), nullable=False)
-    ownership_type: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="company_owned"
-    )
+    ownership_type: Mapped[str] = mapped_column(String(40), nullable=False, default="company_owned")
     approval_status: Mapped[str] = mapped_column(String(40), nullable=False, default="submitted")
     approved_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -663,6 +661,10 @@ class VendorOrderItem(Base, TimestampMixin):
     commission_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payable_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    finance_status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+    finance_approved_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    finance_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finance_reason: Mapped[str | None] = mapped_column(Text)
     settlement_id: Mapped[str | None] = mapped_column(ForeignKey("vendor_settlements.id"))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
@@ -739,6 +741,126 @@ class DeliveryStatusHistory(Base):
     changed_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RiderFinanceProfile(Base, TimestampMixin):
+    """Per-rider delivery earning rule. The default is a flat PKR amount."""
+
+    __tablename__ = "rider_finance_profiles"
+    __table_args__ = (UniqueConstraint("company_id", "rider_user_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    rider_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    delivery_fee_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+
+
+class CODCollection(Base, TimestampMixin):
+    """A rider-submitted COD amount awaiting a finance reconciliation decision."""
+
+    __tablename__ = "cod_collections"
+    __table_args__ = (
+        UniqueConstraint("company_id", "idempotency_key"),
+        UniqueConstraint("company_id", "delivery_assignment_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    delivery_assignment_id: Mapped[str] = mapped_column(
+        ForeignKey("delivery_assignments.id"), nullable=False
+    )
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    rider_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    expected_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    collected_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_minor: Mapped[int | None] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    receipt_reference: Mapped[str] = mapped_column(String(160), nullable=False)
+    proof_reference: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="submitted")
+    payment_id: Mapped[str | None] = mapped_column(ForeignKey("payments.id"))
+    reconciled_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciliation_reason: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+
+
+class RiderCashRemittance(Base, TimestampMixin):
+    """Cash a rider hands back to the company, reconciled by finance."""
+
+    __tablename__ = "rider_cash_remittances"
+    __table_args__ = (UniqueConstraint("company_id", "idempotency_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    rider_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    reference: Mapped[str] = mapped_column(String(160), nullable=False)
+    proof_reference: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="submitted")
+    reconciled_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciliation_reason: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[str | None] = mapped_column(ForeignKey("ledger_journals.id"))
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+
+
+class RiderLedgerEntry(Base, TimestampMixin):
+    """The rider-facing projection of earnings, adjustments, and payouts."""
+
+    __tablename__ = "rider_ledger_entries"
+    __table_args__ = (UniqueConstraint("company_id", "rider_user_id", "source_type", "source_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    rider_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    balance_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    memo: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[str | None] = mapped_column(ForeignKey("ledger_journals.id"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+
+
+class RiderPayout(Base, TimestampMixin):
+    __tablename__ = "rider_payouts"
+    __table_args__ = (
+        UniqueConstraint("company_id", "rider_user_id", "payout_number"),
+        UniqueConstraint("company_id", "idempotency_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    rider_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    payout_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    payment_reference: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="paid")
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paid_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    journal_id: Mapped[str | None] = mapped_column(ForeignKey("ledger_journals.id"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
 
 
 class VendorSettlement(Base, TimestampMixin):
@@ -953,9 +1075,7 @@ class AuditLog(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"))
-    user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL")
-    )
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     action: Mapped[str] = mapped_column(String(160), nullable=False)
     entity_type: Mapped[str | None] = mapped_column(String(160))
     entity_id: Mapped[str | None] = mapped_column(String(120))
@@ -1169,9 +1289,7 @@ class LedgerAccount(Base, TimestampMixin):
 
     __tablename__ = "ledger_accounts"
     __table_args__ = (
-        UniqueConstraint(
-            "company_id", "code", name="uq_ledger_accounts_company_code"
-        ),
+        UniqueConstraint("company_id", "code", name="uq_ledger_accounts_company_code"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -1191,9 +1309,7 @@ class LedgerAccount(Base, TimestampMixin):
 class LedgerPeriod(Base, TimestampMixin):
     __tablename__ = "ledger_periods"
     __table_args__ = (
-        UniqueConstraint(
-            "company_id", "name", name="uq_ledger_periods_company_name"
-        ),
+        UniqueConstraint("company_id", "name", name="uq_ledger_periods_company_name"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -1280,9 +1396,7 @@ class VendorInventoryBalance(Base, TimestampMixin):
     # product-level (non-variant) inventory unique on both SQLite and PostgreSQL.
     variant_key: Mapped[str] = mapped_column(String(36), nullable=False, default="")
     warehouse_id: Mapped[str] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
-    ownership_type: Mapped[str] = mapped_column(
-        String(40), nullable=False, default="company_owned"
-    )
+    ownership_type: Mapped[str] = mapped_column(String(40), nullable=False, default="company_owned")
     on_hand_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reserved_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1417,9 +1531,7 @@ class LicenseServerRecord(Base, TimestampMixin):
 
     __tablename__ = "license_server_records"
     __table_args__ = (
-        UniqueConstraint(
-            "license_key_hash", name="uq_license_server_records_license_key_hash"
-        ),
+        UniqueConstraint("license_key_hash", name="uq_license_server_records_license_key_hash"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -1455,6 +1567,4 @@ class LicenseServerEvent(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

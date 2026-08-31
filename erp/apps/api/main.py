@@ -24,6 +24,7 @@ from erp.apps.api.web import router as web_router
 from erp.packages.core.api.accounting_routes import router as accounting_router
 from erp.packages.core.api.commerce_routes import router as commerce_router
 from erp.packages.core.api.delivery_routes import router as delivery_router
+from erp.packages.core.api.finance_routes import router as finance_router
 from erp.packages.core.api.ledger_routes import router as ledger_router
 from erp.packages.core.api.marketplace_routes import router as marketplace_router
 from erp.packages.core.api.push_routes import router as push_router
@@ -308,6 +309,7 @@ def create_app(settings_override: Settings | None = None) -> FastAPI:
     app.include_router(accounting_router, prefix=settings.api_prefix)
     app.include_router(commerce_router, prefix=settings.api_prefix)
     app.include_router(delivery_router, prefix=settings.api_prefix)
+    app.include_router(finance_router, prefix=settings.api_prefix)
     app.include_router(ledger_router, prefix=settings.api_prefix)
     app.include_router(push_router, prefix=settings.api_prefix)
     app.include_router(web_router)

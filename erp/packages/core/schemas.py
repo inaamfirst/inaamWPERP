@@ -89,11 +89,33 @@ class VendorRegistrationRequest(BaseModel):
     phone: str | None = Field(default=None, max_length=80)
 
 
+class UserRegistrationRequest(BaseModel):
+    """Public staff-account request. Roles are deliberately not accepted here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_slug: str = Field(
+        min_length=2,
+        max_length=120,
+        pattern=r"^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+    )
+    username: str = Field(min_length=3, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    full_name: str | None = Field(default=None, max_length=255)
+
+
 class RegistrationResponse(BaseModel):
     vendor_id: str
     user_id: str
     account_status: str
     vendor_status: str
+    message: str
+
+
+class UserRegistrationResponse(BaseModel):
+    user_id: str
+    account_status: str
     message: str
 
 
@@ -175,6 +197,16 @@ class UserUpdate(BaseModel):
 
 class UserPasswordReset(BaseModel):
     password: str = Field(min_length=8, max_length=128)
+
+
+class RegistrationApprovalRequest(BaseModel):
+    """Administrator-selected roles for a pending staff registration."""
+
+    role_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
+class RegistrationRejectionRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class RoleCreate(BaseModel):
@@ -971,6 +1003,169 @@ class DeliveryRiderOut(BaseModel):
     is_active: bool
 
 
+class CODCollectionCreate(BaseModel):
+    delivery_assignment_id: str = Field(min_length=1, max_length=36)
+    collected_minor: int = Field(ge=1)
+    receipt_reference: str = Field(min_length=2, max_length=160)
+    proof_reference: str = Field(min_length=2, max_length=1000)
+    idempotency_key: str = Field(min_length=3, max_length=255)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CODReconciliationRequest(BaseModel):
+    accepted: bool
+    accepted_minor: int | None = Field(default=None, ge=1)
+    reason: str | None = Field(default=None, max_length=5000)
+
+
+class CODCollectionOut(BaseModel):
+    id: str
+    company_id: str
+    delivery_assignment_id: str
+    order_id: str
+    order_number: str
+    rider_user_id: str
+    rider_name: str | None
+    expected_minor: int
+    collected_minor: int
+    accepted_minor: int | None
+    currency: str
+    receipt_reference: str
+    proof_reference: str
+    status: str
+    payment_id: str | None
+    reconciled_by_id: str | None
+    reconciled_at: datetime | None
+    reconciliation_reason: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RiderFinanceProfileUpdate(BaseModel):
+    delivery_fee_minor: int = Field(ge=0)
+    currency: str = Field(default="PKR", min_length=3, max_length=3)
+    is_active: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RiderFinanceProfileOut(BaseModel):
+    id: str
+    company_id: str
+    rider_user_id: str
+    delivery_fee_minor: int
+    currency: str
+    is_active: bool
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RiderRemittanceCreate(BaseModel):
+    amount_minor: int = Field(ge=1)
+    reference: str = Field(min_length=2, max_length=160)
+    proof_reference: str = Field(min_length=2, max_length=1000)
+    idempotency_key: str = Field(min_length=3, max_length=255)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RiderRemittanceReconciliationRequest(BaseModel):
+    accepted: bool
+    reason: str | None = Field(default=None, max_length=5000)
+
+
+class RiderCashRemittanceOut(BaseModel):
+    id: str
+    company_id: str
+    rider_user_id: str
+    rider_name: str | None
+    amount_minor: int
+    currency: str
+    reference: str
+    proof_reference: str
+    status: str
+    reconciled_by_id: str | None
+    reconciled_at: datetime | None
+    reconciliation_reason: str | None
+    journal_id: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RiderAdjustmentCreate(BaseModel):
+    amount_minor: int
+    memo: str = Field(min_length=2, max_length=5000)
+    idempotency_key: str = Field(min_length=3, max_length=255)
+
+    @field_validator("amount_minor")
+    @classmethod
+    def amount_must_not_be_zero(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("amount_minor must not be zero")
+        return value
+
+
+class RiderPayoutCreate(BaseModel):
+    amount_minor: int = Field(ge=1)
+    payment_reference: str = Field(min_length=2, max_length=160)
+    idempotency_key: str = Field(min_length=3, max_length=255)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RiderLedgerEntryOut(BaseModel):
+    id: str
+    company_id: str
+    rider_user_id: str
+    entry_type: str
+    source_type: str
+    source_id: str
+    amount_minor: int
+    balance_minor: int
+    currency: str
+    memo: str | None
+    journal_id: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RiderPayoutOut(BaseModel):
+    id: str
+    company_id: str
+    rider_user_id: str
+    payout_number: str
+    amount_minor: int
+    currency: str
+    payment_reference: str
+    status: str
+    paid_at: datetime
+    paid_by_id: str | None
+    journal_id: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class VendorFinanceDecision(BaseModel):
+    approved: bool
+    reason: str | None = Field(default=None, max_length=5000)
+
+
+class FinanceDashboardOut(BaseModel):
+    collected_sales_minor: int = 0
+    pending_cod_minor: int = 0
+    rider_cash_in_hand_minor: int = 0
+    vendor_payables_minor: int = 0
+    approved_vendor_payouts_minor: int = 0
+    rider_earnings_payable_minor: int = 0
+    delivery_expense_minor: int = 0
+    expenses_minor: int = 0
+    refunds_minor: int = 0
+    net_operational_profit_minor: int = 0
+    reconciliation_warnings: int = 0
+
+
 class SupportContactCreate(BaseModel):
     label: str = Field(min_length=2, max_length=120)
     role: str = Field(default="support", min_length=2, max_length=80)
@@ -1039,6 +1234,10 @@ class AdminUserDetailOut(UserOut):
     vendor_profile: VendorProfileOut | None = None
 
 
+class PendingRegistrationOut(AdminUserDetailOut):
+    registration_type: Literal["staff", "vendor"]
+
+
 class AdminUserUpdate(UserUpdate):
     vendor_profile: VendorUpdate | None = None
 
@@ -1083,9 +1282,7 @@ class VendorProductAssignRequest(BaseModel):
     vendor_id: str | None = Field(default=None, max_length=36)
     product_id: str = Field(min_length=1, max_length=36)
     approval_status: str = Field(default="submitted", min_length=3, max_length=40)
-    ownership_type: Literal["company_owned", "vendor_owned", "consignment"] = (
-        "company_owned"
-    )
+    ownership_type: Literal["company_owned", "vendor_owned", "consignment"] = "company_owned"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1122,6 +1319,10 @@ class VendorOrderItemOut(BaseModel):
     commission_minor: int
     payable_minor: int
     status: str
+    finance_status: str
+    finance_approved_by_id: str | None
+    finance_approved_at: datetime | None
+    finance_reason: str | None
     order_number: str | None = None
     order_status: str | None = None
     payment_status: str | None = None

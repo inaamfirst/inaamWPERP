@@ -75,7 +75,9 @@ def list_riders(db: Session, company_id: str | None) -> list[User]:
                 Role.name == "Rider",
             )
             .order_by(User.full_name, User.username)
-        ).unique().all()
+        )
+        .unique()
+        .all()
     )
 
 
@@ -196,9 +198,7 @@ def list_assignments(
         if status not in DELIVERY_STATUSES:
             raise ServiceError(422, f"Unsupported delivery status: {status}.")
         query = query.where(DeliveryAssignment.status == status)
-    return list(
-        db.scalars(query.order_by(DeliveryAssignment.created_at.desc())).all()
-    )
+    return list(db.scalars(query.order_by(DeliveryAssignment.created_at.desc())).all())
 
 
 def unassigned_orders(db: Session, company_id: str | None) -> list[Order]:
@@ -404,6 +404,13 @@ def change_assignment_status(
     db.flush()
     order = db.get(Order, assignment.order_id)
     if order is not None:
+        if status == "delivered":
+            # A sale may only move to finance review after both delivery and
+            # confirmed payment conditions are met. This is a no-op until the
+            # payment side is complete.
+            from erp.packages.core.finance_services import refresh_vendor_finance_eligibility
+
+            refresh_vendor_finance_eligibility(db, company_id=scoped, order_id=order.id)
         from erp.packages.core.push_services import enqueue_delivery_event
 
         enqueue_delivery_event(

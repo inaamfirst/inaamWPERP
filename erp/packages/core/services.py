@@ -182,7 +182,12 @@ def seed_default_roles(db: Session, company_id: str | None) -> None:
         },
         "Rider": {
             "description": "Default rider role for delivery assignments.",
-            "perms": {"delivery.view_assigned", "delivery.update_assigned"},
+            "perms": {
+                "delivery.view_assigned",
+                "delivery.update_assigned",
+                "rider.finance.view",
+                "rider.finance.submit",
+            },
             "overwrite": False,
         },
         MANAGER_ROLE_NAME: {

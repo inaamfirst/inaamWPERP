@@ -44,15 +44,19 @@ from erp.packages.core.services import ServiceError, record_audit, to_utc, utcno
 DEFAULT_LEDGER_ACCOUNTS: list[tuple[str, str, str]] = [
     ("1000", "Payment Clearing", "asset"),
     ("1010", "Bank", "asset"),
+    ("1020", "Rider Cash in Hand", "asset"),
     ("1200", "Inventory", "asset"),
     ("2000", "Vendor Payable", "liability"),
     ("2100", "Commission Payable", "liability"),
     ("2200", "Inventory Clearing", "liability"),
+    ("2400", "Rider Earnings Payable", "liability"),
     ("3000", "Commission Revenue", "income"),
     ("3999", "Migration Clearing", "equity"),
     ("4000", "Sales Revenue", "income"),
     ("5000", "Cost of Goods Sold", "expense"),
     ("5100", "Commission Expense", "expense"),
+    ("5200", "Rider Delivery Expense", "expense"),
+    ("5300", "Refunds and Returns", "expense"),
 ]
 ACCOUNT_TYPES = {"asset", "liability", "equity", "income", "expense", "contra"}
 OWNERSHIP_TYPES = {"company_owned", "vendor_owned", "consignment"}

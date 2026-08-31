@@ -88,6 +88,7 @@ export const ACCESS_POLICIES: readonly AccessPolicy[] = [
   { id: "rider-assigned", title: "Assigned deliveries", shortTitle: "Assigned", path: "/rider/deliveries", workspace: "rider", group: "Active work", icon: "delivery", anyOf: ["delivery.view_assigned"], primary: true },
   { id: "rider-today", title: "Today’s deliveries", shortTitle: "Today", path: "/rider/today", workspace: "rider", group: "Active work", icon: "orders", anyOf: ["delivery.view_assigned"], primary: true },
   { id: "rider-history", title: "Delivery history", shortTitle: "History", path: "/rider/history", workspace: "rider", group: "History", icon: "history", anyOf: ["delivery.view_assigned"], primary: true },
+  { id: "rider-finance", title: "Cash & earnings", shortTitle: "Finance", path: "/rider/finance", workspace: "rider", group: "Account", icon: "ledger", anyOf: ["rider.finance.view"] },
 ] as const;
 
 export const WORKSPACE_GROUPS: Record<WorkspaceId, readonly NavigationGroup[]> = {

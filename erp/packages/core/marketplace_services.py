@@ -187,6 +187,10 @@ def vendor_order_item_out(
         commission_minor=item.commission_minor,
         payable_minor=item.payable_minor,
         status=item.status,
+        finance_status=item.finance_status,
+        finance_approved_by_id=item.finance_approved_by_id,
+        finance_approved_at=item.finance_approved_at,
+        finance_reason=item.finance_reason,
         order_number=order.order_number if order else None,
         order_status=order.status if order else None,
         payment_status=order.payment_status if order else None,
@@ -381,6 +385,32 @@ def approve_vendor(
     vendor_id: str,
 ) -> Vendor:
     vendor = get_vendor(db, company_id, vendor_id)
+    pending_user = db.scalar(
+        select(User)
+        .join(VendorUser, VendorUser.user_id == User.id)
+        .where(
+            VendorUser.company_id == vendor.company_id,
+            VendorUser.vendor_id == vendor.id,
+            VendorUser.is_primary.is_(True),
+            func.lower(VendorUser.role_name) == "vendor",
+            User.company_id == vendor.company_id,
+            User.account_status == "pending",
+        )
+    )
+    if pending_user is not None:
+        # Keep the legacy marketplace action compatible while using the same
+        # role assignment, status transition, and audit path as Identity.
+        from erp.packages.core.admin_services import approve_registration
+
+        approve_registration(
+            db,
+            company_id=vendor.company_id,
+            actor_user_id=user_id,
+            user_id=pending_user.id,
+            role_ids=[],
+        )
+        db.refresh(vendor)
+        return vendor
     return change_vendor_status(
         db,
         company_id=vendor.company_id,
@@ -1144,6 +1174,7 @@ def create_vendor_settlement(
         VendorOrderItem.company_id == scoped_company_id,
         VendorOrderItem.vendor_id == vendor.id,
         VendorOrderItem.settlement_id.is_(None),
+        VendorOrderItem.finance_status == "approved",
     )
     if payload.period_start_at is not None:
         query = query.where(VendorOrderItem.created_at >= payload.period_start_at)
@@ -1177,6 +1208,7 @@ def create_vendor_settlement(
     for item in items:
         item.settlement_id = settlement.id
         item.status = "allocated"
+        item.finance_status = "allocated"
     db.flush()
 
     post_vendor_settlement_entry(
@@ -1185,6 +1217,8 @@ def create_vendor_settlement(
         user_id=user_id,
         settlement=settlement,
     )
+    for item in items:
+        item.finance_status = "paid"
     db.refresh(settlement)
     record_audit(
         db,
