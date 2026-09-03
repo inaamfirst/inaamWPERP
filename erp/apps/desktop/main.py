@@ -116,22 +116,37 @@ def woocommerce_sync_transition(
 def woocommerce_sync_completion_message(stats: dict[str, object]) -> tuple[str, bool]:
     failed_media = int(stats.get("failed_media_pushes") or 0)
     pending_media = int(stats.get("pending_media_pushes") or 0)
+    failed_videos = int(stats.get("failed_video_pushes") or 0)
+    pending_videos = int(stats.get("pending_video_pushes") or 0)
     failed_products = int(stats.get("failed_product_pushes") or 0)
     pending_products = int(stats.get("pending_product_pushes") or 0)
     archived_missing = int(stats.get("archived_missing_products") or 0)
     media_error = str(stats.get("last_media_error") or "").strip()
+    video_error = str(stats.get("last_video_error") or "").strip()
 
-    if failed_media or pending_media or failed_products or pending_products:
+    unresolved = (
+        failed_media
+        or pending_media
+        or failed_videos
+        or pending_videos
+        or failed_products
+        or pending_products
+    )
+    if unresolved:
         attention_parts: list[str] = []
         if failed_products or pending_products:
             attention_parts.append(f"{failed_products + pending_products} product update(s)")
         if failed_media or pending_media:
             attention_parts.append(f"{failed_media + pending_media} media item(s)")
+        if failed_videos or pending_videos:
+            attention_parts.append(f"{failed_videos + pending_videos} video update(s)")
         message = (
             f"WooCommerce data sync completed, but {', '.join(attention_parts)} need attention."
         )
         if media_error:
             message = f"{message} Latest reason: {media_error}"
+        elif video_error:
+            message = f"{message} Latest reason: {video_error}"
         return message, False
     if archived_missing:
         suffix = "product" if archived_missing == 1 else "products"
@@ -493,9 +508,13 @@ def run() -> int:
                     "pulled_orders": stats.get("pulled_orders", 0),
                     "pushed_records": stats.get("pushed_records", 0),
                     "pushed_media_records": stats.get("pushed_media_records", 0),
+                    "pushed_video_records": stats.get("pushed_video_records", 0),
                     "deferred_media_records": stats.get("deferred_media_records", 0),
+                    "deferred_video_records": stats.get("deferred_video_records", 0),
                     "pending_media_pushes": stats.get("pending_media_pushes", 0),
+                    "pending_video_pushes": stats.get("pending_video_pushes", 0),
                     "failed_media_pushes": stats.get("failed_media_pushes", 0),
+                    "failed_video_pushes": stats.get("failed_video_pushes", 0),
                     "archived_missing_products": stats.get("archived_missing_products", 0),
                     "failed_records": stats.get("failed_records", 0),
                     "error": run.get("error") or "",
@@ -514,17 +533,29 @@ def run() -> int:
             f"Consumer key: {config.get('consumer_key_hint') or 'not stored'}",
             f"WordPress media user: {config.get('wordpress_username') or 'not configured'}",
             f"WordPress media uploads: {config.get('wordpress_media_configured', False)}",
+            f"Video plugin detected: {config.get('video_plugin_detected', False)}",
+            f"Video plugin compatible: {config.get('video_plugin_compatible', False)}",
+            f"Video plugin version: {config.get('video_plugin_version') or 'not detected'}",
+            (
+                "WordPress upload limit: "
+                f"{config.get('wordpress_max_upload_bytes') or 'unknown'} bytes"
+            ),
             f"Webhook signing: {config.get('webhook_secret_configured', False)}",
             f"Pending product pushes: {config.get('pending_product_pushes', 0)}",
             f"Pending media pushes: {config.get('pending_media_pushes', 0)}",
+            f"Pending video pushes: {config.get('pending_video_pushes', 0)}",
             f"Failed product pushes: {config.get('failed_product_pushes', 0)}",
             f"Failed media pushes: {config.get('failed_media_pushes', 0)}",
+            f"Failed video pushes: {config.get('failed_video_pushes', 0)}",
             f"Recent sync runs: {len(runs)}",
             f"Open conflicts: {len(conflicts)}",
         ]
         last_media_error = str(config.get("last_media_error") or "").strip()
         if last_media_error:
             lines.extend(["", "Last media error", last_media_error])
+        last_video_error = str(config.get("last_video_error") or "").strip()
+        if last_video_error:
+            lines.extend(["", "Last video error", last_video_error])
         if runs:
             latest = runs[0]
             stats = latest.get("stats")
@@ -547,12 +578,16 @@ def run() -> int:
                         f"{stats.get('pushed_media_records', 0)}"
                     ),
                     f"Product media updates deferred: {stats.get('deferred_media_records', 0)}",
+                    f"Product video updates pushed: {stats.get('pushed_video_records', 0)}",
+                    f"Product video updates deferred: {stats.get('deferred_video_records', 0)}",
                     (
                         "Products archived locally because they were deleted online: "
                         f"{stats.get('archived_missing_products', 0)}"
                     ),
                     f"Pending media pushes after sync: {stats.get('pending_media_pushes', 0)}",
+                    f"Pending video pushes after sync: {stats.get('pending_video_pushes', 0)}",
                     f"Failed media pushes after sync: {stats.get('failed_media_pushes', 0)}",
+                    f"Failed video pushes after sync: {stats.get('failed_video_pushes', 0)}",
                     f"Push failures: {stats.get('failed_records', 0)}",
                 ]
             )
@@ -675,6 +710,29 @@ def run() -> int:
     product_upload_image_button = QPushButton("Upload Image")
     product_remove_image_button = QPushButton("Remove Selected Image")
 
+    product_video_table = make_table(
+        [
+            "ID",
+            "Source",
+            "URL",
+            "Name",
+            "Sort",
+            "Sync Status",
+            "Storefront URL",
+            "Last Synced",
+            "Added",
+        ]
+    )
+    product_video_table.setColumnHidden(0, True)
+    product_video_table.sortItems(4, Qt.SortOrder.AscendingOrder)
+    product_video_table.setSortingEnabled(True)
+    product_add_video_url_input = QLineEdit()
+    product_add_video_url_input.setPlaceholderText("https://youtube.com/... or https://example.com/video.mp4")
+    product_add_video_button = QPushButton("Add Video URL")
+    product_upload_video_button = QPushButton("Upload MP4")
+    product_open_video_button = QPushButton("Open Selected Video")
+    product_remove_video_button = QPushButton("Remove Selected Video")
+
     product_variant_table = make_table(
         [
             "ID",
@@ -770,6 +828,17 @@ def run() -> int:
     images_layout.addWidget(product_image_table)
     images_layout.addLayout(image_button_row)
 
+    videos_tab = QWidget()
+    videos_layout = QVBoxLayout(videos_tab)
+    video_button_row = QHBoxLayout()
+    video_button_row.addWidget(product_add_video_url_input)
+    video_button_row.addWidget(product_add_video_button)
+    video_button_row.addWidget(product_upload_video_button)
+    video_button_row.addWidget(product_open_video_button)
+    video_button_row.addWidget(product_remove_video_button)
+    videos_layout.addWidget(product_video_table)
+    videos_layout.addLayout(video_button_row)
+
     variants_tab = QWidget()
     variants_layout = QVBoxLayout(variants_tab)
     variant_button_row = QHBoxLayout()
@@ -802,6 +871,7 @@ def run() -> int:
     product_tabs.addTab(inventory_tab, "Inventory")
     product_tabs.addTab(shipping_tab, "Shipping")
     product_tabs.addTab(images_tab, "Images")
+    product_tabs.addTab(videos_tab, "Videos")
     product_tabs.addTab(variants_tab, "Variants")
     product_tabs.addTab(seo_tab, "SEO")
     product_tabs.addTab(advanced_tab, "Advanced")
@@ -943,10 +1013,14 @@ def run() -> int:
         ("pulled_orders", "Orders In"),
         ("pushed_records", "Pushed Out"),
         ("pushed_media_records", "Media Out"),
+        ("pushed_video_records", "Videos Out"),
         ("deferred_media_records", "Media Deferred"),
+        ("deferred_video_records", "Videos Deferred"),
         ("archived_missing_products", "Archived Locally"),
         ("pending_media_pushes", "Media Pending"),
+        ("pending_video_pushes", "Videos Pending"),
         ("failed_media_pushes", "Media Failed"),
+        ("failed_video_pushes", "Videos Failed"),
         ("failed_records", "Push Failed"),
         ("error", "Error"),
     ]
@@ -1815,6 +1889,7 @@ def run() -> int:
         product_height_input.clear()
         product_shipping_class_input.clear()
         clear_table(product_image_table)
+        clear_table(product_video_table)
         clear_table(product_variant_table)
         product_seo_title_input.clear()
         product_seo_description_input.clear()
@@ -1878,6 +1953,23 @@ def run() -> int:
                         image.get("name"),
                         image.get("sync_status"),
                         image.get("last_synced_at"),
+                    ],
+                )
+        clear_table(product_video_table)
+        for video in product.get("videos") if isinstance(product.get("videos"), list) else []:
+            if isinstance(video, dict):
+                set_table_row(
+                    product_video_table,
+                    [
+                        video.get("id"),
+                        video.get("source_type"),
+                        video.get("url"),
+                        video.get("name"),
+                        video.get("sort_order"),
+                        video.get("sync_status"),
+                        video.get("remote_url"),
+                        video.get("last_synced_at"),
+                        video.get("created_at"),
                     ],
                 )
         clear_table(product_variant_table)
@@ -2005,6 +2097,20 @@ def run() -> int:
                     "name": table_text(product_image_table, row, 5) or None,
                 }
             )
+        videos: list[dict[str, object]] = []
+        for row in range(product_video_table.rowCount()):
+            url = table_text(product_video_table, row, 2)
+            if not url:
+                continue
+            sort_text = table_text(product_video_table, row, 4) or str(row)
+            videos.append(
+                {
+                    "id": table_text(product_video_table, row, 0) or None,
+                    "url": url,
+                    "name": table_text(product_video_table, row, 3) or None,
+                    "sort_order": int(sort_text),
+                }
+            )
         variants: list[dict[str, object]] = []
         for row in range(product_variant_table.rowCount()):
             variants.append(
@@ -2062,6 +2168,7 @@ def run() -> int:
             "height": optional_text(product_height_input),
             "shipping_class": optional_text(product_shipping_class_input),
             "images": images,
+            "videos": videos,
             "variants": variants,
             "seo_title": optional_text(product_seo_title_input),
             "seo_description": product_seo_description_input.toPlainText().strip() or None,
@@ -2293,6 +2400,74 @@ def run() -> int:
         row = product_image_table.currentRow()
         if row >= 0:
             product_image_table.removeRow(row)
+
+    def add_product_video_url() -> None:
+        url = product_add_video_url_input.text().strip()
+        if not url:
+            product_message.setText("Video URL is required.")
+            return
+        if product_video_table.rowCount() >= 10:
+            product_message.setText("A product can have at most 10 videos.")
+            return
+        set_table_row(
+            product_video_table,
+            ["", "URL", url, "", product_video_table.rowCount(), "pending_add", "", "", ""],
+        )
+        product_add_video_url_input.clear()
+
+    def upload_product_video() -> None:
+        token = current_token()
+        product_id = state.get("selected_product_id")
+        if not token or not product_id:
+            product_message.setText("Save the product before uploading videos.")
+            return
+        if product_video_table.rowCount() >= 10:
+            product_message.setText("A product can have at most 10 videos.")
+            return
+        file_path, _ = QFileDialog.getOpenFileName(
+            window,
+            "Select product video",
+            "",
+            "MP4 Videos (*.mp4)",
+        )
+        if not file_path:
+            return
+
+        def action() -> None:
+            video = client.upload_product_video(token, product_id, file_path)
+            set_table_row(
+                product_video_table,
+                [
+                    video.get("id"),
+                    video.get("source_type"),
+                    video.get("url"),
+                    video.get("name"),
+                    video.get("sort_order"),
+                    video.get("sync_status"),
+                    video.get("remote_url"),
+                    video.get("last_synced_at"),
+                    video.get("created_at"),
+                ],
+            )
+            product_message.setText("Video uploaded.")
+
+        guarded(product_message, action)
+
+    def open_selected_product_video() -> None:
+        row = product_video_table.currentRow()
+        url = table_text(product_video_table, row, 2) if row >= 0 else ""
+        if not url:
+            product_message.setText("Select a product video first.")
+            return
+        target = f"{client.base_url}{url}" if url.startswith("/") else url
+        if not QDesktopServices.openUrl(QUrl(target)):
+            product_message.setText("The system browser could not open this video.")
+
+    def remove_selected_video() -> None:
+        row = product_video_table.currentRow()
+        if row >= 0:
+            product_video_table.removeRow(row)
+            product_message.setText("Video removed. Save the product to apply this change.")
 
     def add_product_variant() -> None:
         set_table_row(
@@ -4700,6 +4875,10 @@ def run() -> int:
     product_add_image_button.clicked.connect(add_product_image_url)
     product_upload_image_button.clicked.connect(upload_product_image)
     product_remove_image_button.clicked.connect(remove_selected_image)
+    product_add_video_button.clicked.connect(add_product_video_url)
+    product_upload_video_button.clicked.connect(upload_product_video)
+    product_open_video_button.clicked.connect(open_selected_product_video)
+    product_remove_video_button.clicked.connect(remove_selected_video)
     product_add_variant_button.clicked.connect(add_product_variant)
     product_remove_variant_button.clicked.connect(remove_selected_variant)
     customer_refresh_button.clicked.connect(refresh_customers)

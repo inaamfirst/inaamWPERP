@@ -63,6 +63,7 @@ from erp.packages.core.catalog_services import (
     product_relationship_ids,
     product_tag_names,
     product_variants,
+    product_videos,
     suggest_product_codes,
     update_brand,
     update_category,
@@ -99,6 +100,7 @@ from erp.packages.core.db.models import (
     Product,
     ProductImage,
     ProductVariant,
+    ProductVideo,
     Role,
     Setting,
     StockMovement,
@@ -211,6 +213,7 @@ from erp.packages.core.schemas import (
     ProductOut,
     ProductUpdate,
     ProductVariantOut,
+    ProductVideoOut,
     RefreshRequest,
     RegistrationResponse,
     RestorePlanOut,
@@ -287,12 +290,14 @@ from erp.packages.core.whatsapp_services import (
 from erp.packages.core.woocommerce_services import (
     configure_woocommerce,
     enqueue_product_sync,
+    enqueue_product_video_sync,
     enqueue_woocommerce_sync_run,
     list_sync_conflicts,
     list_sync_runs,
     load_woocommerce_config,
     process_webhook_event,
     resolve_sync_conflict,
+    saved_wordpress_video_plugin_status,
     test_woocommerce_connection,
     woocommerce_sync_job_status,
     woocommerce_sync_outbox_status,
@@ -307,6 +312,8 @@ PRODUCT_IMAGE_MIME_TYPES = {
     "image/webp",
     "image/gif",
 }
+PRODUCT_VIDEO_EXTENSION = ".mp4"
+PRODUCT_VIDEO_MIME_TYPES = {"video/mp4", "application/mp4"}
 
 
 def _enqueue_product_sync_if_configured(
@@ -323,6 +330,21 @@ def _enqueue_product_sync_if_configured(
         raise
 
 
+def _enqueue_product_video_sync_if_configured(
+    db: Session,
+    *,
+    company_id: str | None,
+    product: Product,
+) -> None:
+    try:
+        if load_woocommerce_config(db, company_id) is not None:
+            enqueue_product_video_sync(db, company_id=company_id, product=product)
+    except ServiceError as exc:
+        if exc.status_code == 404:
+            return
+        raise
+
+
 def enabled_module_manifests(settings: object) -> list[object]:
     manifests = load_module_manifests()
     whatsapp_enabled = bool(getattr(settings, "effective_whatsapp_enabled", True))
@@ -330,6 +352,32 @@ def enabled_module_manifests(settings: object) -> list[object]:
         return manifests
     return [manifest for manifest in manifests if manifest.id != "whatsapp"]
 PRODUCT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+PRODUCT_VIDEO_MAX_BYTES = 100 * 1024 * 1024
+PRODUCT_VIDEO_MAX_COUNT = 10
+
+
+def _effective_product_video_upload_limit(db: Session, company_id: str | None) -> tuple[int, bool]:
+    remote_limit = saved_wordpress_video_plugin_status(db, company_id).get("max_upload_bytes")
+    try:
+        remote_limit_bytes = int(remote_limit) if remote_limit is not None else 0
+    except (TypeError, ValueError):
+        remote_limit_bytes = 0
+    if remote_limit_bytes > 0 and remote_limit_bytes < PRODUCT_VIDEO_MAX_BYTES:
+        return remote_limit_bytes, True
+    return PRODUCT_VIDEO_MAX_BYTES, False
+
+
+def _product_video_upload_limit_error(limit_bytes: int, is_wordpress_limit: bool) -> ServiceError:
+    if not is_wordpress_limit:
+        return ServiceError(413, "Product video is too large.")
+    limit_label = (
+        f"{limit_bytes // (1024 * 1024)} MB"
+        if limit_bytes >= 1024 * 1024
+        else f"{limit_bytes} bytes"
+    )
+    return ServiceError(413, f"Product video exceeds the WordPress upload limit ({limit_label}).")
+
+
 ManageRolesContext = Annotated[
     AuthContext,
     Depends(require_permission("identity.manage_roles")),
@@ -663,6 +711,23 @@ def product_image_out(image: ProductImage) -> ProductImageOut:
     )
 
 
+def product_video_out(video: ProductVideo) -> ProductVideoOut:
+    return ProductVideoOut(
+        id=video.id,
+        product_id=video.product_id,
+        source_type=video.source_type,
+        url=video.url,
+        name=video.name,
+        sort_order=video.sort_order,
+        external_id=video.external_id,
+        remote_url=video.remote_url,
+        sync_status=video.sync_status,
+        last_synced_at=video.last_synced_at,
+        created_at=video.created_at,
+        updated_at=video.updated_at,
+    )
+
+
 def product_out(db: Session, product: Product) -> ProductOut:
     return ProductOut(
         id=product.id,
@@ -719,6 +784,7 @@ def product_out(db: Session, product: Product) -> ProductOut:
             product_image_out(image)
             for image in product_images(db, product.id)
         ],
+        videos=[product_video_out(video) for video in product_videos(db, product.id)],
         created_at=product.created_at,
         updated_at=product.updated_at,
     )
@@ -1057,9 +1123,12 @@ def woocommerce_config_out(db: Session, company_id: str | None) -> WooCommerceCo
         else {
             "pending_product_pushes": 0,
             "pending_media_pushes": 0,
+            "pending_video_pushes": 0,
             "failed_product_pushes": 0,
             "failed_media_pushes": 0,
+            "failed_video_pushes": 0,
             "last_media_error": None,
+            "last_video_error": None,
         }
     )
     job_status = (
@@ -1082,10 +1151,15 @@ def woocommerce_config_out(db: Session, company_id: str | None) -> WooCommerceCo
             webhook_secret_configured=False,
             pending_product_pushes=int(status["pending_product_pushes"]),
             pending_media_pushes=int(status["pending_media_pushes"]),
+            pending_video_pushes=int(status["pending_video_pushes"]),
             failed_product_pushes=int(status["failed_product_pushes"]),
             failed_media_pushes=int(status["failed_media_pushes"]),
+            failed_video_pushes=int(status["failed_video_pushes"]),
             last_media_error=(
                 str(status["last_media_error"]) if status["last_media_error"] else None
+            ),
+            last_video_error=(
+                str(status["last_video_error"]) if status["last_video_error"] else None
             ),
             queued_sync_runs=int(job_status["queued_sync_runs"]),
             running_sync_runs=int(job_status["running_sync_runs"]),
@@ -1107,6 +1181,7 @@ def woocommerce_config_out(db: Session, company_id: str | None) -> WooCommerceCo
             Setting.key == "woocommerce.credentials",
         )
     )
+    plugin_status = saved_wordpress_video_plugin_status(db, company_id)
     return WooCommerceConfigOut(
         configured=True,
         site_url=config.site_url,
@@ -1118,9 +1193,22 @@ def woocommerce_config_out(db: Session, company_id: str | None) -> WooCommerceCo
         webhook_secret_configured=bool(config.webhook_secret),
         pending_product_pushes=int(status["pending_product_pushes"]),
         pending_media_pushes=int(status["pending_media_pushes"]),
+        pending_video_pushes=int(status["pending_video_pushes"]),
         failed_product_pushes=int(status["failed_product_pushes"]),
         failed_media_pushes=int(status["failed_media_pushes"]),
+        failed_video_pushes=int(status["failed_video_pushes"]),
         last_media_error=str(status["last_media_error"]) if status["last_media_error"] else None,
+        last_video_error=str(status["last_video_error"]) if status["last_video_error"] else None,
+        video_plugin_detected=bool(plugin_status["detected"]),
+        video_plugin_compatible=bool(plugin_status["compatible"]),
+        video_plugin_version=(
+            str(plugin_status["version"]) if plugin_status["version"] else None
+        ),
+        wordpress_max_upload_bytes=(
+            int(plugin_status["max_upload_bytes"])
+            if plugin_status["max_upload_bytes"] is not None
+            else None
+        ),
         queued_sync_runs=int(job_status["queued_sync_runs"]),
         running_sync_runs=int(job_status["running_sync_runs"]),
         active_sync_run_id=(
@@ -1992,11 +2080,18 @@ def catalog_product_update(
             product_id=product_id,
             payload=payload,
         )
-        _enqueue_product_sync_if_configured(
-            db,
-            company_id=context.user.company_id,
-            product=product,
-        )
+        if set(payload.model_fields_set) == {"videos"}:
+            _enqueue_product_video_sync_if_configured(
+                db,
+                company_id=context.user.company_id,
+                product=product,
+            )
+        else:
+            _enqueue_product_sync_if_configured(
+                db,
+                company_id=context.user.company_id,
+                product=product,
+            )
         db.commit()
         return product_out(db, product)
     except ServiceError as exc:
@@ -2064,6 +2159,73 @@ def catalog_product_image_upload(
         return product_image_out(image)
     except ServiceError as exc:
         db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.post(
+    "/catalog/products/{product_id}/videos/upload",
+    response_model=ProductVideoOut,
+    status_code=201,
+    tags=["catalog"],
+)
+def catalog_product_video_upload(
+    product_id: str,
+    context: CatalogManageContext,
+    db: DbSession,
+    file: Annotated[UploadFile, File()],
+) -> ProductVideoOut:
+    target_path: Path | None = None
+    try:
+        product = get_product(db, context.user.company_id, product_id)
+        if len(product_videos(db, product.id)) >= PRODUCT_VIDEO_MAX_COUNT:
+            raise ServiceError(422, f"A product can have at most {PRODUCT_VIDEO_MAX_COUNT} videos.")
+        original_name = Path(file.filename or "product-video.mp4").name
+        suffix = Path(original_name).suffix.lower()
+        if suffix != PRODUCT_VIDEO_EXTENSION:
+            raise ServiceError(422, "Unsupported video extension. Only MP4 files are allowed.")
+        content_type = (file.content_type or mimetypes.types_map.get(suffix) or "").lower()
+        if content_type not in PRODUCT_VIDEO_MIME_TYPES:
+            raise ServiceError(422, "Unsupported video content type. Only MP4 files are allowed.")
+        upload_limit, is_wordpress_limit = _effective_product_video_upload_limit(
+            db, context.user.company_id
+        )
+
+        settings = get_settings()
+        relative_dir = Path("products") / product.company_id / product.id / "videos"
+        target_dir = Path(settings.media_upload_dir) / relative_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_name = f"{uuid.uuid4().hex}{suffix}"
+        target_path = target_dir / target_name
+        size = 0
+        with target_path.open("wb") as handle:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > upload_limit:
+                    raise _product_video_upload_limit_error(upload_limit, is_wordpress_limit)
+                handle.write(chunk)
+
+        video = ProductVideo(
+            company_id=product.company_id,
+            product_id=product.id,
+            source_type="uploaded",
+            url=f"/media/{relative_dir.as_posix()}/{target_name}",
+            name=original_name[:255],
+            sort_order=len(product_videos(db, product.id)),
+        )
+        db.add(video)
+        db.flush()
+        _enqueue_product_video_sync_if_configured(
+            db,
+            company_id=context.user.company_id,
+            product=product,
+        )
+        db.commit()
+        db.refresh(video)
+        return product_video_out(video)
+    except ServiceError as exc:
+        db.rollback()
+        if target_path is not None:
+            target_path.unlink(missing_ok=True)
         raise service_error_to_http(exc) from exc
 
 
@@ -2593,6 +2755,10 @@ def woocommerce_connection_test(
             ok=result.ok,
             status=result.status,
             detail=result.detail,
+            video_plugin_detected=result.video_plugin_detected,
+            video_plugin_compatible=result.video_plugin_compatible,
+            video_plugin_version=result.video_plugin_version,
+            wordpress_max_upload_bytes=result.wordpress_max_upload_bytes,
         )
     except ServiceError as exc:
         raise service_error_to_http(exc) from exc

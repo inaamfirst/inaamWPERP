@@ -11,6 +11,7 @@ from erp.packages.core.catalog_services import (
     product_relationship_ids,
     product_tag_names,
     product_variants,
+    product_videos,
 )
 from erp.packages.core.customer_services import (
     customer_addresses,
@@ -35,6 +36,7 @@ from erp.packages.core.db.models import (
     Product,
     ProductImage,
     ProductVariant,
+    ProductVideo,
     Role,
     Setting,
     StockMovement,
@@ -75,6 +77,7 @@ from erp.packages.core.schemas import (
     ProductImageOut,
     ProductOut,
     ProductVariantOut,
+    ProductVideoOut,
     RestorePlanOut,
     RoleOut,
     SalesReportRow,
@@ -234,6 +237,23 @@ def product_image_out(image: ProductImage) -> ProductImageOut:
     )
 
 
+def product_video_out(video: ProductVideo) -> ProductVideoOut:
+    return ProductVideoOut(
+        id=video.id,
+        product_id=video.product_id,
+        source_type=video.source_type,
+        url=video.url,
+        name=video.name,
+        sort_order=video.sort_order,
+        external_id=video.external_id,
+        remote_url=video.remote_url,
+        sync_status=video.sync_status,
+        last_synced_at=video.last_synced_at,
+        created_at=video.created_at,
+        updated_at=video.updated_at,
+    )
+
+
 def product_out(db: Session, product: Product) -> ProductOut:
     return ProductOut(
         id=product.id,
@@ -284,6 +304,7 @@ def product_out(db: Session, product: Product) -> ProductOut:
         metadata=product.metadata_json,
         variants=[product_variant_out(v) for v in product_variants(db, product.id)],
         images=[product_image_out(img) for img in product_images(db, product.id)],
+        videos=[product_video_out(video) for video in product_videos(db, product.id)],
         created_at=product.created_at,
         updated_at=product.updated_at,
     )

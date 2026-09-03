@@ -16,7 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from erp.packages.core.catalog_services import archive_product, require_company_id
+from erp.packages.core.catalog_services import (
+    archive_product,
+    product_videos,
+    require_company_id,
+)
 from erp.packages.core.config import get_settings
 from erp.packages.core.db.models import (
     Brand,
@@ -29,6 +33,7 @@ from erp.packages.core.db.models import (
     ProductCategoryLink,
     ProductImage,
     ProductVariant,
+    ProductVideo,
     Setting,
     StockMovement,
     SyncConflict,
@@ -46,6 +51,8 @@ from erp.packages.core.security import decrypt_text, encrypt_text
 from erp.packages.core.services import ServiceError, record_audit, utcnow
 
 WOOCOMMERCE_SETTING_KEY = "woocommerce.credentials"
+WOOCOMMERCE_VIDEO_META_KEY = "choiceoye_erp_product_videos"
+WOOCOMMERCE_VIDEO_SCHEMA_VERSION = 1
 CONNECTOR = "woocommerce"
 WOOCOMMERCE_REST_MODES = ("pretty", "query")
 WOOCOMMERCE_SYNC_MODES = ("incremental", "products", "full_products", "reconcile_products")
@@ -92,6 +99,23 @@ class ConnectionTestResult:
     ok: bool
     status: str
     detail: str
+    video_plugin_detected: bool = False
+    video_plugin_compatible: bool = False
+    video_plugin_version: str | None = None
+    wordpress_max_upload_bytes: int | None = None
+
+
+class ReusableFileBody:
+    """Replayable streaming request body for bounded remote-upload retries."""
+
+    def __init__(self, path: Path, chunk_size: int = 1024 * 1024) -> None:
+        self.path = path
+        self.chunk_size = chunk_size
+
+    def __iter__(self):
+        with self.path.open("rb") as handle:
+            while chunk := handle.read(self.chunk_size):
+                yield chunk
 
 
 @dataclass(frozen=True)
@@ -212,6 +236,18 @@ def build_wordpress_request_url(site_url: str, resource_path: str, rest_api_mode
         return f"{base_url}/wp-json/wp/v2{normalized_path}"
     if rest_api_mode == "query":
         return f"{base_url}/?rest_route=/wp/v2{normalized_path}"
+    raise ServiceError(422, f"Unsupported WordPress REST mode: {rest_api_mode}.")
+
+
+def build_wordpress_namespace_url(
+    site_url: str, namespace_path: str, rest_api_mode: str
+) -> str:
+    base_url = normalize_site_url(site_url)
+    normalized_path = namespace_path.lstrip("/")
+    if rest_api_mode == "pretty":
+        return f"{base_url}/wp-json/{normalized_path}"
+    if rest_api_mode == "query":
+        return f"{base_url}/?rest_route=/{normalized_path}"
     raise ServiceError(422, f"Unsupported WordPress REST mode: {rest_api_mode}.")
 
 
@@ -531,6 +567,15 @@ def configure_woocommerce(
     for sync_key in WOOCOMMERCE_LAST_SYNC_KEYS.values():
         if existing_value.get(sync_key):
             encrypted_value[sync_key] = existing_value[sync_key]
+    for status_key in (
+        "video_plugin_detected",
+        "video_plugin_compatible",
+        "video_plugin_version",
+        "wordpress_max_upload_bytes",
+        "video_plugin_checked",
+    ):
+        if status_key in existing_value:
+            encrypted_value[status_key] = existing_value[status_key]
     wordpress_username = (payload.wordpress_username or "").strip()
     wordpress_application_password = (payload.wordpress_application_password or "").strip()
     webhook_secret = (payload.webhook_secret or "").strip()
@@ -669,13 +714,130 @@ def test_woocommerce_connection(
             )
         checked.append(label)
 
+    plugin_status = test_wordpress_video_plugin(db, company_id, timeout=timeout)
+    detail = f"WooCommerce connection succeeded. Read access verified for {', '.join(checked)}."
+    if plugin_status["compatible"]:
+        detail += f" ChoiceOye video plugin {plugin_status['version']} detected."
+    elif plugin_status["detected"]:
+        detail += (
+            " ChoiceOye video plugin was detected but is incompatible or WooCommerce "
+            "is unavailable; video metadata can sync but will not render."
+        )
+    else:
+        detail += (
+            " ChoiceOye video plugin was not detected; video metadata can sync but "
+            "will not render."
+        )
     return ConnectionTestResult(
         ok=True,
         status="ok",
-        detail=(
-            f"WooCommerce connection succeeded. Read access verified for {', '.join(checked)}."
+        detail=detail,
+        video_plugin_detected=bool(plugin_status["detected"]),
+        video_plugin_compatible=bool(plugin_status["compatible"]),
+        video_plugin_version=(
+            str(plugin_status["version"]) if plugin_status.get("version") else None
+        ),
+        wordpress_max_upload_bytes=(
+            int(plugin_status["max_upload_bytes"])
+            if plugin_status.get("max_upload_bytes") is not None
+            else None
         ),
     )
+
+
+def saved_wordpress_video_plugin_status(
+    db: Session, company_id: str | None
+) -> dict[str, object]:
+    if company_id is None:
+        return {
+            "detected": False,
+            "compatible": False,
+            "version": None,
+            "max_upload_bytes": None,
+            "checked": False,
+        }
+    setting = get_setting(db, require_company_id(company_id), WOOCOMMERCE_SETTING_KEY)
+    value = setting.value if setting is not None else {}
+    return {
+        "detected": bool(value.get("video_plugin_detected", False)),
+        "compatible": bool(value.get("video_plugin_compatible", False)),
+        "version": value.get("video_plugin_version"),
+        "max_upload_bytes": value.get("wordpress_max_upload_bytes"),
+        "checked": bool(value.get("video_plugin_checked", False)),
+    }
+
+
+def test_wordpress_video_plugin(
+    db: Session,
+    company_id: str | None,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, object]:
+    scoped_company_id = require_company_id(company_id)
+    config = load_woocommerce_config(db, scoped_company_id)
+    if config is None:
+        raise ServiceError(404, "WooCommerce is not configured.")
+    detected = False
+    compatible = False
+    version: str | None = None
+    max_upload_bytes: int | None = None
+    for rest_api_mode in woocommerce_rest_mode_candidates(config.rest_api_mode):
+        url = build_wordpress_namespace_url(
+            config.site_url,
+            "choiceoye-erp/v1/status",
+            rest_api_mode,
+        )
+        try:
+            response = _remote_request_with_retry(
+                "GET", url, timeout=timeout, follow_redirects=True
+            )
+        except Exception as exc:
+            LOGGER.info("ChoiceOye video plugin status probe failed: %s", exc)
+            continue
+        if response.status_code != 200:
+            continue
+        try:
+            payload = response.json()
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        detected = payload.get("plugin") == "choiceoye-erp-product-videos"
+        supported = payload.get("schema_versions")
+        compatible = (
+            detected
+            and payload.get("woocommerce") is True
+            and isinstance(supported, list)
+            and WOOCOMMERCE_VIDEO_SCHEMA_VERSION in supported
+        )
+        if payload.get("version") is not None:
+            version = str(payload["version"])
+        try:
+            max_upload_bytes = max(int(payload.get("max_upload_bytes") or 0), 0) or None
+        except (TypeError, ValueError):
+            max_upload_bytes = None
+        break
+
+    setting = get_setting(db, scoped_company_id, WOOCOMMERCE_SETTING_KEY)
+    if setting is not None:
+        value = dict(setting.value)
+        value.update(
+            {
+                "video_plugin_detected": detected,
+                "video_plugin_compatible": compatible,
+                "video_plugin_version": version,
+                "wordpress_max_upload_bytes": max_upload_bytes,
+                "video_plugin_checked": True,
+            }
+        )
+        setting.value = value
+        db.flush()
+    return {
+        "detected": detected,
+        "compatible": compatible,
+        "version": version,
+        "max_upload_bytes": max_upload_bytes,
+    }
 
 
 def validate_resource_type(resource_type: str) -> str:
@@ -771,9 +933,13 @@ def enqueue_sync_outbox(
             existing.payload = payload
             db.flush()
         elif (
-            existing.operation == "push_media"
+            existing.operation in {"push_media", "push_videos"}
             and existing.status == "pending"
-            and existing.last_error == "Waiting for WooCommerce product sync before media sync."
+            and existing.last_error
+            in {
+                "Waiting for WooCommerce product sync before media sync.",
+                "Waiting for WooCommerce product sync before video sync.",
+            }
         ):
             # A deferred media job did not make a remote request. Reset its
             # attempt counter when the product is queued again so a later
@@ -831,7 +997,7 @@ def _local_media_path(media_url: str) -> Path | None:
     except ValueError as exc:
         raise ServiceError(
             422,
-            "Product image path is outside the media upload directory.",
+            "Product media path is outside the media upload directory.",
         ) from exc
     return candidate
 
@@ -953,6 +1119,145 @@ def upload_local_product_images_to_wordpress(
             image=image,
             checkpoint=checkpoint,
         )
+
+
+def upload_product_video_to_wordpress(
+    db: Session,
+    *,
+    company_id: str,
+    video: ProductVideo,
+    checkpoint: Callable[[], None] | None = None,
+) -> None:
+    if video.source_type != "uploaded" or (video.external_id and video.remote_url):
+        return
+    local_path = _local_media_path(video.url)
+    if local_path is None or not local_path.exists() or not local_path.is_file():
+        raise ServiceError(
+            422,
+            f"Product video file is missing locally and cannot be uploaded: {video.url}",
+        )
+    config = load_woocommerce_config(db, company_id)
+    if config is None:
+        raise ServiceError(404, "WooCommerce is not configured.")
+    if not config.wordpress_username or not config.wordpress_application_password:
+        raise ServiceError(
+            422,
+            "WordPress media username and application password are required to upload local "
+            "ERP product videos.",
+        )
+    file_size = local_path.stat().st_size
+    plugin_status = saved_wordpress_video_plugin_status(db, company_id)
+    if not plugin_status["checked"]:
+        # Ask once before a local upload so the operator gets a useful limit
+        # error instead of WordPress rejecting the streamed body later.
+        plugin_status = test_wordpress_video_plugin(db, company_id)
+    remote_limit = plugin_status.get("max_upload_bytes")
+    if remote_limit is not None and file_size > int(remote_limit):
+        remote_limit_bytes = int(remote_limit)
+        remote_limit_label = (
+            f"{remote_limit_bytes // (1024 * 1024)} MB"
+            if remote_limit_bytes >= 1024 * 1024
+            else f"{remote_limit_bytes} bytes"
+        )
+        raise ServiceError(
+            413,
+            "Product video exceeds the WordPress upload limit "
+            f"({remote_limit_label}).",
+        )
+
+    filename = video.name or local_path.name
+    headers = _wordpress_media_headers(filename, "video/mp4")
+    headers["Content-Length"] = str(file_size)
+    auth = (config.wordpress_username, config.wordpress_application_password)
+    last_result: WooCommerceRequestResult | None = None
+    for rest_api_mode in woocommerce_rest_mode_candidates(config.rest_api_mode):
+        url = build_wordpress_request_url(config.site_url, "/media", rest_api_mode)
+        try:
+            response = _remote_request_with_retry(
+                "POST",
+                url,
+                auth=auth,
+                content=ReusableFileBody(local_path),
+                headers=headers,
+                timeout=120.0,
+                follow_redirects=True,
+            )
+        except httpx.RequestError as exc:
+            raise ServiceError(
+                503,
+                f"WordPress media upload failed for {filename}: {exc}",
+            ) from exc
+        result = WooCommerceRequestResult(
+            response=response,
+            rest_api_mode=rest_api_mode,
+            auth_mode="wordpress_application_password",
+            resource_path="/wp/v2/media",
+            url=url,
+        )
+        if response.status_code in {200, 201}:
+            payload = response.json()
+            media_id = payload.get("id") if isinstance(payload, dict) else None
+            source_url = payload.get("source_url") if isinstance(payload, dict) else None
+            if media_id is None or not isinstance(source_url, str) or not source_url.strip():
+                raise ServiceError(
+                    502,
+                    "WordPress video upload succeeded but did not return a media ID and URL.",
+                )
+            if urlparse(source_url).scheme.lower() != "https":
+                raise ServiceError(
+                    422,
+                    "WordPress returned a non-HTTPS product video URL. Configure the WordPress "
+                    "site URL and uploads to use HTTPS before syncing product videos.",
+                )
+            video.external_id = str(media_id)
+            video.remote_url = source_url.strip()
+            video.sync_status = "pending_update"
+            db.flush()
+            if checkpoint is not None:
+                checkpoint()
+            return
+        last_result = result
+    if last_result is None:
+        raise ServiceError(502, "WordPress video upload was not attempted.")
+    raise ServiceError(
+        502,
+        format_remote_http_error(action="Upload product video", result=last_result),
+    )
+
+
+def build_woocommerce_product_video_manifest(
+    db: Session,
+    *,
+    company_id: str,
+    product: Product,
+    checkpoint: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    rows = product_videos(db, product.id)
+    videos: list[dict[str, object]] = []
+    for index, video in enumerate(rows):
+        upload_product_video_to_wordpress(
+            db,
+            company_id=company_id,
+            video=video,
+            checkpoint=checkpoint,
+        )
+        public_url = video.remote_url if video.source_type == "uploaded" else video.url
+        if not public_url:
+            raise ServiceError(422, f"Product video {video.id} has no public URL.")
+        item: dict[str, object] = {
+            "erp_video_id": video.id,
+            "source_type": video.source_type,
+            "url": public_url,
+            "name": video.name or "",
+            "sort_order": index,
+        }
+        if video.external_id:
+            try:
+                item["attachment_id"] = int(video.external_id)
+            except ValueError:
+                item["attachment_id"] = video.external_id
+        videos.append(item)
+    return {"schema_version": WOOCOMMERCE_VIDEO_SCHEMA_VERSION, "videos": videos}
 
 
 def product_images_for_sync(
@@ -1560,6 +1865,8 @@ def enqueue_product_sync(
     )
     if product_requires_media_sync(db, company_id=scoped_company_id, product=product):
         enqueue_product_media_sync(db, company_id=scoped_company_id, product=product)
+    if product_requires_video_sync(db, company_id=scoped_company_id, product=product):
+        enqueue_product_video_sync(db, company_id=scoped_company_id, product=product)
     return outbox
 
 
@@ -1582,6 +1889,24 @@ def product_requires_media_sync(db: Session, *, company_id: str, product: Produc
     if mapping is None:
         return bool(visible_images)
     return any(_product_image_requires_sync(image) for image in images)
+
+
+def product_requires_video_sync(db: Session, *, company_id: str, product: Product) -> bool:
+    """Queue an empty manifest for mapped products so removed videos are cleared remotely."""
+
+    if product_videos(db, product.id):
+        return True
+    return (
+        db.scalar(
+            select(ExternalResourceMap.id).where(
+                ExternalResourceMap.company_id == company_id,
+                ExternalResourceMap.connector == CONNECTOR,
+                ExternalResourceMap.internal_resource_type == "product",
+                ExternalResourceMap.internal_resource_id == product.id,
+            )
+        )
+        is not None
+    )
 
 
 def product_has_media_sync_work(db: Session, *, company_id: str, product: Product) -> bool:
@@ -1636,6 +1961,43 @@ def enqueue_product_media_sync(
         payload={"images": image_state},
         idempotency_key=(
             f"{CONNECTOR}:{scoped_company_id}:push_media:product:{product.id}:{payload_hash}"
+        ),
+    )
+
+
+def enqueue_product_video_sync(
+    db: Session,
+    *,
+    company_id: str | None,
+    product: Product,
+) -> SyncOutbox:
+    scoped_company_id = require_company_id(company_id)
+    video_state = [
+        {
+            "id": video.id,
+            "source_type": video.source_type,
+            "url": video.url,
+            "name": video.name,
+            "sort_order": video.sort_order,
+            "external_id": video.external_id,
+            "remote_url": video.remote_url,
+            "sync_status": video.sync_status,
+            "updated_at": video.updated_at.isoformat() if video.updated_at else None,
+        }
+        for video in product_videos(db, product.id)
+    ]
+    payload_hash = hashlib.sha256(
+        jsonlib.dumps(video_state, sort_keys=True, ensure_ascii=True, default=str).encode("utf-8")
+    ).hexdigest()
+    return enqueue_sync_outbox(
+        db,
+        company_id=scoped_company_id,
+        operation="push_videos",
+        resource_type="product",
+        resource_id=product.id,
+        payload={"videos": video_state},
+        idempotency_key=(
+            f"{CONNECTOR}:{scoped_company_id}:push_videos:product:{product.id}:{payload_hash}"
         ),
     )
 
@@ -1784,10 +2146,14 @@ def woocommerce_sync_outbox_status(
         ]
     pending_product_pushes = 0
     pending_media_pushes = 0
+    pending_video_pushes = 0
     failed_product_pushes = 0
     failed_media_pushes = 0
+    failed_video_pushes = 0
     last_media_error: str | None = None
     last_media_error_at = None
+    last_video_error: str | None = None
+    last_video_error_at = None
     for record in records:
         is_failed = record.status == "failed"
         if record.resource_type == "product" and record.operation == "push":
@@ -1805,12 +2171,25 @@ def woocommerce_sync_outbox_status(
                         last_media_error = record.last_error
             else:
                 pending_media_pushes += 1
+        elif record.resource_type == "product" and record.operation == "push_videos":
+            if is_failed:
+                failed_video_pushes += 1
+                if record.last_error:
+                    updated_at = record.updated_at or record.created_at
+                    if last_video_error_at is None or updated_at > last_video_error_at:
+                        last_video_error_at = updated_at
+                        last_video_error = record.last_error
+            else:
+                pending_video_pushes += 1
     return {
         "pending_product_pushes": pending_product_pushes,
         "pending_media_pushes": pending_media_pushes,
+        "pending_video_pushes": pending_video_pushes,
         "failed_product_pushes": failed_product_pushes,
         "failed_media_pushes": failed_media_pushes,
+        "failed_video_pushes": failed_video_pushes,
         "last_media_error": last_media_error,
+        "last_video_error": last_video_error,
     }
 
 
@@ -1847,14 +2226,19 @@ def default_woocommerce_sync_stats() -> dict[str, object]:
         "archived_products": 0,
         "pushed_records": 0,
         "pushed_media_records": 0,
+        "pushed_video_records": 0,
         "queued_product_pushes": 0,
         "queued_media_pushes": 0,
+        "queued_video_pushes": 0,
         "failed_records": 0,
         "deferred_media_records": 0,
+        "deferred_video_records": 0,
         "pending_product_pushes": 0,
         "pending_media_pushes": 0,
+        "pending_video_pushes": 0,
         "failed_product_pushes": 0,
         "failed_media_pushes": 0,
+        "failed_video_pushes": 0,
         "synced_categories": 0,
         "synced_brands": 0,
         "failed_taxonomies": 0,
@@ -3676,8 +4060,10 @@ def _sync_outbox_operation_priority(record: SyncOutbox) -> tuple[int, object, st
         priority = 0
     elif record.resource_type == "product" and record.operation == "push_media":
         priority = 1
-    else:
+    elif record.resource_type == "product" and record.operation == "push_videos":
         priority = 2
+    else:
+        priority = 3
     return (priority, record.created_at, record.id)
 
 
@@ -3836,8 +4222,10 @@ def process_sync_outbox(
 
     pushed = 0
     pushed_media = 0
+    pushed_videos = 0
     failed = 0
     deferred = 0
+    deferred_videos = 0
     processed_ids: set[str] = set()
 
     def checkpoint_record() -> None:
@@ -4071,6 +4459,70 @@ def process_sync_outbox(
                             current_record_id=rec.id,
                         )
 
+                elif rec.resource_type == "product" and rec.operation == "push_videos":
+                    product = db.scalar(
+                        select(Product).where(
+                            Product.company_id == company_id,
+                            Product.id == rec.resource_id,
+                        )
+                    )
+                    if product:
+                        mapping = db.scalar(
+                            select(ExternalResourceMap).where(
+                                ExternalResourceMap.company_id == company_id,
+                                ExternalResourceMap.connector == CONNECTOR,
+                                ExternalResourceMap.internal_resource_type == "product",
+                                ExternalResourceMap.internal_resource_id == product.id,
+                            )
+                        )
+                        if mapping is None:
+                            rec.attempts = max(0, rec.attempts - 1)
+                            rec.status = "pending"
+                            rec.next_attempt_at = utcnow() + timedelta(minutes=1)
+                            rec.last_error = (
+                                "Waiting for WooCommerce product sync before video sync."
+                            )
+                            deferred_videos += 1
+                            checkpoint_record()
+                            continue
+                        manifest = build_woocommerce_product_video_manifest(
+                            db,
+                            company_id=company_id,
+                            product=product,
+                            checkpoint=checkpoint_record,
+                        )
+                        res = make_woocommerce_request(
+                            db,
+                            company_id,
+                            "PUT",
+                            f"/products/{mapping.external_resource_id}",
+                            {
+                                "meta_data": [
+                                    {"key": WOOCOMMERCE_VIDEO_META_KEY, "value": manifest}
+                                ]
+                            },
+                        )
+                        if res.response.status_code not in {200, 201}:
+                            raise ServiceError(
+                                502,
+                                format_remote_http_error(
+                                    action="Push product videos", result=res
+                                ),
+                            )
+                        synced_at = utcnow()
+                        for video in product_videos(db, product.id):
+                            video.sync_status = "synced"
+                            video.last_synced_at = synced_at
+                        pushed_videos += 1
+                        mark_superseded_outbox_records_synced(
+                            db,
+                            company_id=company_id,
+                            operation=rec.operation,
+                            resource_type=rec.resource_type,
+                            resource_id=rec.resource_id,
+                            current_record_id=rec.id,
+                        )
+
                 elif rec.resource_type == "stock":
                     mapping = db.scalar(
                         select(ExternalResourceMap).where(
@@ -4156,8 +4608,10 @@ def process_sync_outbox(
     return {
         "pushed": pushed,
         "pushed_media": pushed_media,
+        "pushed_videos": pushed_videos,
         "failed": failed,
         "deferred": deferred,
+        "deferred_videos": deferred_videos,
     }
 
 
@@ -4363,6 +4817,16 @@ def run_woocommerce_sync(
                     )
 
                 stats["current_phase"] = "Preparing product queue"
+                video_outbox_ids_before = set(
+                    db.scalars(
+                        select(SyncOutbox.id).where(
+                            SyncOutbox.company_id == scoped_company_id,
+                            SyncOutbox.connector == CONNECTOR,
+                            SyncOutbox.resource_type == "product",
+                            SyncOutbox.operation == "push_videos",
+                        )
+                    ).all()
+                )
                 queued_products = enqueue_products_for_sync(
                     db,
                     scoped_company_id,
@@ -4373,8 +4837,21 @@ def run_woocommerce_sync(
                     scoped_company_id,
                     vendor_id=scoped_vendor_id,
                 )
+                video_outbox_ids_after = set(
+                    db.scalars(
+                        select(SyncOutbox.id).where(
+                            SyncOutbox.company_id == scoped_company_id,
+                            SyncOutbox.connector == CONNECTOR,
+                            SyncOutbox.resource_type == "product",
+                            SyncOutbox.operation == "push_videos",
+                        )
+                    ).all()
+                )
                 stats["queued_product_pushes"] = queued_products
                 stats["queued_media_pushes"] = queued_media
+                stats["queued_video_pushes"] = len(
+                    video_outbox_ids_after - video_outbox_ids_before
+                )
                 run_log.stats = dict(stats)
                 checkpoint()
 
@@ -4388,8 +4865,10 @@ def run_woocommerce_sync(
                 )
                 stats["pushed_records"] = stats_push.get("pushed", 0)
                 stats["pushed_media_records"] = stats_push.get("pushed_media", 0)
+                stats["pushed_video_records"] = stats_push.get("pushed_videos", 0)
                 stats["failed_records"] = stats_push.get("failed", 0)
                 stats["deferred_media_records"] = stats_push.get("deferred", 0)
+                stats["deferred_video_records"] = stats_push.get("deferred_videos", 0)
                 run_log.stats = dict(stats)
                 checkpoint()
 
@@ -4459,10 +4938,12 @@ def run_woocommerce_sync(
         run_log.stats = dict(stats)
         pending_outbound = int(stats.get("pending_product_pushes", 0)) + int(
             stats.get("pending_media_pushes", 0)
-        )
+        ) + int(stats.get("pending_video_pushes", 0))
         failed_outbound = int(stats.get("failed_product_pushes", 0)) + int(
             stats.get("failed_media_pushes", 0)
-        ) + int(stats.get("failed_taxonomies", 0))
+        ) + int(stats.get("failed_video_pushes", 0)) + int(
+            stats.get("failed_taxonomies", 0)
+        )
         if pending_outbound or failed_outbound:
             run_log.status = "failed"
             run_log.error = (

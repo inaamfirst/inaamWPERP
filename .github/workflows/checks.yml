@@ -85,3 +85,21 @@ jobs:
         run: npm run lint
       - name: Production build
         run: npm run build
+
+  wordpress-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.0"
+      - name: Validate plugin PHP and metadata behavior
+        shell: pwsh
+        run: ./scripts/test_wordpress_plugin.ps1
+
+  wordpress-plugin-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise plugin in WordPress and WooCommerce
+        run: bash scripts/test_wordpress_plugin_integration.sh

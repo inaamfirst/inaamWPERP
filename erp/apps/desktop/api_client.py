@@ -691,6 +691,38 @@ class ApiHealthClient:
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
+    def upload_product_video(
+        self,
+        token: str,
+        product_id: str,
+        file_path: str,
+    ) -> dict[str, object]:
+        endpoint = f"/api/v1/catalog/products/{product_id}/videos/upload"
+        try:
+            with open(file_path, "rb") as handle:
+                response = httpx.post(
+                    f"{self.base_url}{endpoint}",
+                    headers=self._headers(token),
+                    files={"file": (file_path, handle, "video/mp4")},
+                    timeout=180.0,
+                    follow_redirects=True,
+                )
+        except httpx.RequestError as exc:
+            raise ApiResponseError(
+                0,
+                f"Unable to connect to {self.base_url}: {exc}",
+                url=f"{self.base_url}{endpoint}",
+            ) from exc
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+                detail = jsonlib.dumps(payload, ensure_ascii=True, default=str)
+            except Exception:
+                detail = response.text or "No response body."
+            raise ApiResponseError(response.status_code, detail, url=str(response.request.url))
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
     def list_categories(self, token: str) -> list[dict[str, object]]:
         response = self.request("GET", "/api/v1/catalog/categories", token=token)
         return response if isinstance(response, list) else []

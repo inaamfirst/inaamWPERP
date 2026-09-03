@@ -9,6 +9,21 @@ This guide connects a WooCommerce store to the ERP desktop app.
 3. Set permissions to `Read/Write`.
 4. Copy the generated consumer key and consumer secret immediately.
 
+### Product videos (optional)
+
+To show ERP product videos in the WooCommerce storefront, install and activate
+the **ChoiceOye ERP Product Videos** plugin. Build it with
+`.\scripts\build_wordpress_plugin.ps1`, then upload
+`release_builds/wordpress/choiceoye-erp-product-videos-1.0.0.zip` through
+**Plugins → Add New → Upload Plugin**. It requires WordPress 6.4+,
+WooCommerce 8.5+, and PHP 8.0+.
+
+Create a WordPress application password for the same integration user when ERP
+users upload local MP4 files. The connector uses it only to stream those files
+to the WordPress Media Library. YouTube, Vimeo, and direct HTTPS MP4 URLs stay
+external. See [WordPress product videos](wordpress_product_videos_plugin.md)
+for the complete workflow and troubleshooting.
+
 Do not paste WooCommerce secrets into chat, documentation, screenshots, or source
 code. Store them only through the ERP desktop WooCommerce screen or a secure
 production secret manager.
@@ -20,10 +35,13 @@ production secret manager.
 3. Open `WooCommerce` from the left navigation.
 4. Enter the store URL, for example `https://choiceoye.com`.
 5. Paste the consumer key and consumer secret.
-6. Click `Save Config`.
-7. Click `Test Connection`.
-8. If the test succeeds, click `Run Sync`.
-9. Review `Recent Sync Runs` and `Open Conflicts`.
+6. For ERP-uploaded MP4 videos, enter the WordPress username and application
+   password.
+7. Click `Save Config`.
+8. Click `Test Connection` and review the plugin detection and WordPress upload
+   limit in the result.
+9. If the test succeeds, click `Run Sync`.
+10. Review `Recent Sync Runs` and `Open Conflicts`.
 
 The Dashboard also provides `Sync Products` and `Sync All Content` actions. The
 administrator `Sync Products` action publishes the ERP catalog and then pulls
@@ -72,6 +90,19 @@ API and worker queue.
 Live-store rollout still requires field ownership review, rate-limit tuning,
 credential rotation policy, and store-specific acceptance tests before enabling
 automatic production sync.
+
+## Product video synchronization
+
+The ERP stays authoritative for the ordered video collection. It sends video
+metadata through `choiceoye_erp_product_videos`, separate from WooCommerce's
+native product image payload. Video updates, uploads, removals, reordering, and
+manual product synchronization create a retryable video push once the product
+has a WooCommerce mapping. An empty collection clears videos from the storefront.
+
+A missing or incompatible WordPress plugin is shown as a connector warning;
+normal product sync still succeeds. The connector exposes pending and failed
+video pushes plus the last video error. Deleting a video association never
+deletes its WordPress Media Library attachment.
 
 ## Troubleshooting
 

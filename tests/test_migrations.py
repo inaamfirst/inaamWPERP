@@ -125,6 +125,15 @@ def assert_head_schema(engine: sa.Engine) -> None:
     tables = set(inspector.get_table_names())
     assert AUTH_TABLES.issubset(tables)
     assert RUNTIME_SCHEMA_TABLES.issubset(tables)
+    product_video_columns = {
+        column["name"] for column in inspector.get_columns("product_videos")
+    }
+    assert {
+        "external_id",
+        "remote_url",
+        "sync_status",
+        "last_synced_at",
+    }.issubset(product_video_columns)
 
     expected_unique_constraints = {
         "ledger_accounts": {"uq_ledger_accounts_company_code"},
@@ -459,6 +468,73 @@ def run_roundtrip(root: Path, database_url: str) -> None:
         assert_head_schema(engine)
         assert preserved_snapshot(engine, layout) == before
         assert_vendor_backfill(engine, ids)
+    finally:
+        engine.dispose()
+
+
+def test_product_video_sync_migration_preserves_existing_rows(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    database_url = f"sqlite:///{tmp_path / 'product_video_sync.db'}"
+    cfg = migration_config(root, database_url)
+    command.upgrade(cfg, "202609020025")
+    engine = sa.create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO companies (id, name, slug, status) "
+                    "VALUES ('company-video', 'Video Company', 'video-company', 'active')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO products "
+                    "(id, company_id, name, slug, product_type, status, metadata) VALUES "
+                    "('product-video', 'company-video', 'Demo product', 'demo-product', "
+                    "'simple', 'active', '{}')"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO product_videos "
+                    "(id, company_id, product_id, source_type, url, name, sort_order) VALUES "
+                    "('video-legacy', 'company-video', 'product-video', 'youtube', "
+                    "'https://www.youtube.com/watch?v=abc123XYZ', 'Legacy demo', 0)"
+                )
+            )
+
+        command.upgrade(cfg, "head")
+        with engine.connect() as connection:
+            row = connection.execute(
+                sa.text(
+                    "SELECT source_type, url, name, sort_order, external_id, remote_url, "
+                    "sync_status FROM product_videos WHERE id = 'video-legacy'"
+                )
+            ).mappings().one()
+        assert dict(row) == {
+            "source_type": "youtube",
+            "url": "https://www.youtube.com/watch?v=abc123XYZ",
+            "name": "Legacy demo",
+            "sort_order": 0,
+            "external_id": None,
+            "remote_url": None,
+            "sync_status": "pending_add",
+        }
+
+        command.downgrade(cfg, "202609020025")
+        with engine.connect() as connection:
+            columns = {
+                column["name"]
+                for column in sa.inspect(engine).get_columns("product_videos")
+            }
+            row = connection.execute(
+                sa.text("SELECT url, name FROM product_videos WHERE id = 'video-legacy'")
+            ).mappings().one()
+        assert {"external_id", "remote_url", "sync_status", "last_synced_at"}.isdisjoint(columns)
+        assert dict(row) == {
+            "url": "https://www.youtube.com/watch?v=abc123XYZ",
+            "name": "Legacy demo",
+        }
     finally:
         engine.dispose()
 

@@ -474,6 +474,28 @@ class ProductImageOut(BaseModel):
     last_synced_at: datetime | None
 
 
+class ProductVideoCreate(BaseModel):
+    id: str | None = Field(default=None, max_length=36)
+    url: str = Field(min_length=8, max_length=2000)
+    name: str | None = Field(default=None, max_length=255)
+    sort_order: int = Field(default=0, ge=0)
+
+
+class ProductVideoOut(BaseModel):
+    id: str
+    product_id: str
+    source_type: str
+    url: str
+    name: str | None
+    sort_order: int
+    external_id: str | None
+    remote_url: str | None
+    sync_status: str
+    last_synced_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ProductCreate(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     slug: str | None = Field(default=None, min_length=2, max_length=160)
@@ -521,6 +543,7 @@ class ProductCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     variants: list[ProductVariantCreate] = Field(default_factory=list, max_length=100)
     images: list[ProductImageCreate] = Field(default_factory=list, max_length=100)
+    videos: list[ProductVideoCreate] = Field(default_factory=list, max_length=10)
 
 
 class ProductUpdate(BaseModel):
@@ -569,6 +592,7 @@ class ProductUpdate(BaseModel):
     custom_metadata: dict[str, Any] | None = None
     variants: list[ProductVariantCreate] | None = Field(default=None, max_length=100)
     images: list[ProductImageCreate] | None = Field(default=None, max_length=100)
+    videos: list[ProductVideoCreate] | None = Field(default=None, max_length=10)
     metadata: dict[str, Any] | None = None
 
 
@@ -626,6 +650,7 @@ class ProductOut(BaseModel):
     metadata: dict[str, Any]
     variants: list[ProductVariantOut]
     images: list[ProductImageOut]
+    videos: list[ProductVideoOut]
     created_at: datetime
     updated_at: datetime
 
@@ -1650,9 +1675,16 @@ class WooCommerceConfigOut(BaseModel):
     webhook_secret_configured: bool = False
     pending_product_pushes: int = 0
     pending_media_pushes: int = 0
+    pending_video_pushes: int = 0
     failed_product_pushes: int = 0
     failed_media_pushes: int = 0
+    failed_video_pushes: int = 0
     last_media_error: str | None = None
+    last_video_error: str | None = None
+    video_plugin_detected: bool = False
+    video_plugin_compatible: bool = False
+    video_plugin_version: str | None = None
+    wordpress_max_upload_bytes: int | None = None
     queued_sync_runs: int = 0
     running_sync_runs: int = 0
     active_sync_run_id: str | None = None
@@ -1664,6 +1696,10 @@ class WooCommerceConnectionTestOut(BaseModel):
     ok: bool
     status: str
     detail: str
+    video_plugin_detected: bool = False
+    video_plugin_compatible: bool = False
+    video_plugin_version: str | None = None
+    wordpress_max_upload_bytes: int | None = None
 
 
 class WhatsAppTemplateCreate(BaseModel):

@@ -425,6 +425,23 @@ class ProductImage(Base, TimestampMixin):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ProductVideo(Base, TimestampMixin):
+    __tablename__ = "product_videos"
+    __table_args__ = (Index("ix_product_videos_product_id", "product_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    external_id: Mapped[str | None] = mapped_column(String(120))
+    remote_url: Mapped[str | None] = mapped_column(Text)
+    sync_status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending_add")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ProductChannelListing(Base, TimestampMixin):
     """Per-channel publication and pricing state for a catalog product."""
 

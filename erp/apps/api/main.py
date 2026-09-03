@@ -59,20 +59,33 @@ def _safe_request_id(supplied: str) -> str:
 class RequestSizeLimitMiddleware:
     """Reject request bodies larger than the configured bounded in-memory limit."""
 
-    def __init__(self, app, max_body_size: int) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self,
+        app,
+        max_body_size: int,
+        product_video_upload_max_body_size: int = 101 * 1024 * 1024,
+    ) -> None:  # type: ignore[no-untyped-def]
         self.app = app
         self.max_body_size = max_body_size
+        self.product_video_upload_max_body_size = product_video_upload_max_body_size
 
     async def __call__(self, scope, receive, send) -> None:  # type: ignore[no-untyped-def]
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        max_body_size = self.max_body_size
+        path = scope.get("path")
+        if isinstance(path, str) and path.endswith("/videos/upload"):
+            # Allow a 100 MiB MP4 plus multipart framing without weakening the
+            # normal API request limit for unrelated routes.
+            max_body_size = self.product_video_upload_max_body_size
+
         headers = Headers(scope=scope)
         content_length = headers.get("content-length")
         if content_length is not None:
             try:
-                if int(content_length) > self.max_body_size:
+                if int(content_length) > max_body_size:
                     await self._send_payload_too_large(scope, receive, send)
                     return
             except ValueError:
@@ -88,7 +101,7 @@ class RequestSizeLimitMiddleware:
             if message["type"] != "http.request":
                 continue
             received_size += len(message.get("body", b""))
-            if received_size > self.max_body_size:
+            if received_size > max_body_size:
                 await self._send_payload_too_large(scope, receive, send)
                 return
             buffered_messages.append(message)

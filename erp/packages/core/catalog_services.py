@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import Select, inspect, select
 from sqlalchemy.orm import Session
 
+from erp.packages.core.config import get_settings
 from erp.packages.core.db.models import (
     Brand,
     Category,
@@ -19,6 +22,7 @@ from erp.packages.core.db.models import (
     ProductTag,
     ProductTagLink,
     ProductVariant,
+    ProductVideo,
     StockMovement,
     SyncConflict,
     SyncOutbox,
@@ -51,6 +55,9 @@ RELATIONSHIP_FIELDS = {
     "cross_sell_ids": "cross_sell",
     "grouped_product_ids": "grouped",
 }
+PRODUCT_VIDEO_MAX_COUNT = 10
+YOUTUBE_VIDEO_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+VIMEO_VIDEO_HOSTS = {"vimeo.com", "www.vimeo.com", "player.vimeo.com"}
 
 
 def table_exists(db: Session, table_name: str) -> bool:
@@ -454,6 +461,60 @@ def product_images(db: Session, product_id: str) -> list[ProductImage]:
     )
 
 
+def product_videos(db: Session, product_id: str) -> list[ProductVideo]:
+    return list(
+        db.scalars(
+            select(ProductVideo)
+            .where(ProductVideo.product_id == product_id)
+            .order_by(ProductVideo.sort_order, ProductVideo.created_at)
+        ).all()
+    )
+
+
+def product_video_source_type(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ServiceError(
+            422,
+            "Product video URLs must be HTTPS direct MP4, YouTube, or Vimeo links.",
+        )
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    path = parsed.path.lower()
+    if path.endswith(".mp4"):
+        return "mp4"
+    if host == "youtu.be" and re.fullmatch(r"/[A-Za-z0-9_-]{6,}", parsed.path):
+        return "youtube"
+    if host in YOUTUBE_VIDEO_HOSTS - {"youtu.be"}:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        video_id = parse_qs(parsed.query).get("v", [""])[0]
+        if re.fullmatch(r"[A-Za-z0-9_-]{6,}", video_id):
+            return "youtube"
+        if len(path_parts) == 2 and path_parts[0] in {"embed", "shorts", "live"}:
+            if re.fullmatch(r"[A-Za-z0-9_-]{6,}", path_parts[1]):
+                return "youtube"
+    if host in VIMEO_VIDEO_HOSTS:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if any(part.isdigit() for part in path_parts):
+            return "vimeo"
+    raise ServiceError(
+        422,
+        "Product video URLs must be direct MP4, YouTube, or Vimeo links.",
+    )
+
+
+def _remove_uploaded_product_video(url: str) -> None:
+    if not url.startswith("/media/"):
+        return
+    media_root = Path(get_settings().media_upload_dir).resolve()
+    relative = url.removeprefix("/media/").lstrip("/").replace("\\", "/")
+    target = (media_root / relative).resolve()
+    try:
+        target.relative_to(media_root)
+    except ValueError:
+        return
+    target.unlink(missing_ok=True)
+
+
 def product_category_ids(db: Session, product_id: str) -> list[str]:
     return list(
         db.scalars(
@@ -771,6 +832,57 @@ def replace_product_images(
                 db.delete(image)
 
 
+def replace_product_videos(
+    db: Session,
+    *,
+    company_id: str,
+    product: Product,
+    videos: list[Any],
+) -> None:
+    if len(videos) > PRODUCT_VIDEO_MAX_COUNT:
+        raise ServiceError(422, f"A product can have at most {PRODUCT_VIDEO_MAX_COUNT} videos.")
+    existing = {
+        video.id: video
+        for video in db.scalars(select(ProductVideo).where(ProductVideo.product_id == product.id))
+    }
+    keep_ids: set[str] = set()
+    for video_payload in videos:
+        video_id = getattr(video_payload, "id", None)
+        video = existing.get(video_id) if video_id else None
+        if video is None:
+            video = ProductVideo(
+                company_id=company_id,
+                product_id=product.id,
+                source_type=product_video_source_type(video_payload.url),
+                url=video_payload.url,
+            )
+            db.add(video)
+        elif video.url != video_payload.url:
+            previous_url = video.url
+            previous_source_type = video.source_type
+            video.url = video_payload.url
+            video.source_type = product_video_source_type(video_payload.url)
+            video.external_id = None
+            video.remote_url = None
+            video.last_synced_at = None
+            video.sync_status = "pending_update"
+            if previous_source_type == "uploaded":
+                _remove_uploaded_product_video(previous_url)
+        if video.name != video_payload.name or video.sort_order != video_payload.sort_order:
+            if video.sync_status == "synced":
+                video.sync_status = "pending_update"
+        video.name = video_payload.name
+        video.sort_order = video_payload.sort_order
+        db.flush()
+        keep_ids.add(video.id)
+
+    for video_id, video in existing.items():
+        if video_id not in keep_ids:
+            if video.source_type == "uploaded":
+                _remove_uploaded_product_video(video.url)
+            db.delete(video)
+
+
 def create_product(
     db: Session,
     *,
@@ -874,6 +986,12 @@ def create_product(
         company_id=scoped_company_id,
         product=product,
         images=payload.images,
+    )
+    replace_product_videos(
+        db,
+        company_id=scoped_company_id,
+        product=product,
+        videos=payload.videos,
     )
     db.flush()
     db.refresh(product)
@@ -1017,6 +1135,13 @@ def update_product(
             product=product,
             images=payload.images,
         )
+    if "videos" in fields and payload.videos is not None:
+        replace_product_videos(
+            db,
+            company_id=scoped_company_id,
+            product=product,
+            videos=payload.videos,
+        )
     db.flush()
     db.refresh(product)
     record_audit(
@@ -1150,6 +1275,12 @@ def permanently_delete_product(
         ExternalResourceMap.internal_resource_id == product.id,
     ).delete(synchronize_session=False)
     db.query(ProductImage).filter(ProductImage.product_id == product.id).delete(
+        synchronize_session=False
+    )
+    for video in product_videos(db, product.id):
+        if video.source_type == "uploaded":
+            _remove_uploaded_product_video(video.url)
+    db.query(ProductVideo).filter(ProductVideo.product_id == product.id).delete(
         synchronize_session=False
     )
     db.query(ProductCategoryLink).filter(ProductCategoryLink.product_id == product.id).delete(

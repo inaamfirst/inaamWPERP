@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -32,6 +33,7 @@ from erp.packages.core.db.models import (
     ProductCategoryLink,
     ProductImage,
     ProductVariant,
+    ProductVideo,
     Setting,
     StockMovement,
     SyncInboxLog,
@@ -47,7 +49,10 @@ from erp.packages.core.services import utcnow
 from erp.packages.core.woocommerce_services import (
     SYNC_OUTBOX_STALE_SECONDS,
     WOOCOMMERCE_SETTING_KEY,
+    WOOCOMMERCE_VIDEO_META_KEY,
+    build_woocommerce_product_video_manifest,
     enqueue_product_sync,
+    enqueue_product_video_sync,
     enqueue_products_for_sync,
     enqueue_sync_outbox,
     ensure_remote_brand,
@@ -63,6 +68,9 @@ from erp.packages.core.woocommerce_services import (
     recover_stale_woocommerce_sync_records,
     run_woocommerce_sync,
     upsert_external_resource_map,
+)
+from erp.packages.core.woocommerce_services import (
+    test_wordpress_video_plugin as check_wordpress_video_plugin,
 )
 
 
@@ -243,6 +251,554 @@ def configure_store(
     assert response.status_code == 200
 
 
+def test_product_video_manifest_preserves_external_video_order(harness: ApiHarness) -> None:
+    _token, company_id = complete_first_use_setup(harness.client)
+    with harness.session_factory() as db:
+        product = Product(
+            company_id=company_id,
+            name="External Videos",
+            slug="external-videos",
+            sku="ERP-VIDEO-EXTERNAL",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        db.add_all(
+            [
+                ProductVideo(
+                    company_id=company_id,
+                    product_id=product.id,
+                    source_type="youtube",
+                    url="https://www.youtube.com/watch?v=AbCdEf_1234",
+                    name="YouTube demo",
+                    sort_order=2,
+                ),
+                ProductVideo(
+                    company_id=company_id,
+                    product_id=product.id,
+                    source_type="vimeo",
+                    url="https://vimeo.com/1234567",
+                    name="Vimeo demo",
+                    sort_order=0,
+                ),
+                ProductVideo(
+                    company_id=company_id,
+                    product_id=product.id,
+                    source_type="mp4",
+                    url="https://cdn.example.test/products/demo.mp4",
+                    name="Direct MP4",
+                    sort_order=1,
+                ),
+            ]
+        )
+        db.commit()
+        manifest = build_woocommerce_product_video_manifest(
+            db,
+            company_id=company_id,
+            product=product,
+        )
+
+    assert manifest["schema_version"] == 1
+    videos = manifest["videos"]
+    assert [video["source_type"] for video in videos] == ["vimeo", "mp4", "youtube"]
+    assert [video["sort_order"] for video in videos] == [0, 1, 2]
+    assert all("attachment_id" not in video for video in videos)
+
+
+def test_uploaded_product_video_sync_uploads_then_publishes_metadata(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    configure_store(harness.client, headers, wordpress_media=True)
+    monkeypatch.setattr(
+        woocommerce_services,
+        "get_settings",
+        lambda: SimpleNamespace(media_upload_dir=str(tmp_path)),
+    )
+    local_path = tmp_path / "products" / company_id / "video-product" / "videos" / "demo.mp4"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"demo-mp4-data")
+
+    with harness.session_factory() as db:
+        product = Product(
+            id="video-product",
+            company_id=company_id,
+            name="Uploaded Video",
+            slug="uploaded-video",
+            sku="ERP-VIDEO-UPLOAD",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        video = ProductVideo(
+            company_id=company_id,
+            product_id=product.id,
+            source_type="uploaded",
+            url=f"/media/products/{company_id}/{product.id}/videos/demo.mp4",
+            name="demo.mp4",
+            sort_order=0,
+        )
+        db.add(video)
+        upsert_external_resource_map(
+            db,
+            company_id=company_id,
+            resource_type="product",
+            internal_id=product.id,
+            external_id="501",
+        )
+        db.flush()
+        enqueue_product_video_sync(db, company_id=company_id, product=product)
+        db.commit()
+        video_id = video.id
+
+    uploads: list[bytes] = []
+    payloads: list[dict[str, object]] = []
+
+    def mock_request(
+        method: str,
+        url: str,
+        json: dict | None = None,
+        **kwargs: object,
+    ) -> httpx.Response:
+        assert kwargs.get("follow_redirects") is True
+        if method == "GET" and url.endswith("/wp-json/choiceoye-erp/v1/status"):
+            return httpx.Response(
+                200,
+                json={
+                    "plugin": "choiceoye-erp-product-videos",
+                    "version": "1.0.0",
+                    "schema_versions": [1],
+                    "woocommerce": True,
+                    "max_upload_bytes": 100 * 1024 * 1024,
+                },
+            )
+        if method == "POST" and url.endswith("/wp-json/wp/v2/media"):
+            uploads.append(b"".join(kwargs["content"]))
+            return httpx.Response(
+                201,
+                json={
+                    "id": 991,
+                    "source_url": "https://shop.example.test/wp-content/uploads/demo.mp4",
+                },
+            )
+        if method == "PUT" and url.endswith("/wp-json/wc/v3/products/501"):
+            payloads.append(json or {})
+            return httpx.Response(200, json={"id": 501})
+        raise AssertionError(f"Unexpected video sync request: {method} {url}")
+
+    monkeypatch.setattr(httpx, "request", mock_request)
+    with harness.session_factory() as db:
+        result = process_sync_outbox(db, company_id)
+        db.commit()
+        stored = db.get(ProductVideo, video_id)
+        assert stored is not None
+        assert stored.external_id == "991"
+        assert stored.remote_url == "https://shop.example.test/wp-content/uploads/demo.mp4"
+        assert stored.sync_status == "synced"
+        assert stored.last_synced_at is not None
+
+    assert result == {
+        "pushed": 0,
+        "pushed_media": 0,
+        "pushed_videos": 1,
+        "failed": 0,
+        "deferred": 0,
+        "deferred_videos": 0,
+    }
+    assert uploads == [b"demo-mp4-data"]
+    assert payloads == [
+        {
+            "meta_data": [
+                {
+                    "key": WOOCOMMERCE_VIDEO_META_KEY,
+                    "value": {
+                        "schema_version": 1,
+                        "videos": [
+                            {
+                                "erp_video_id": video_id,
+                                "source_type": "uploaded",
+                                "url": "https://shop.example.test/wp-content/uploads/demo.mp4",
+                                "name": "demo.mp4",
+                                "sort_order": 0,
+                                "attachment_id": 991,
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    ]
+
+
+def test_empty_product_video_manifest_clears_storefront_videos(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    configure_store(harness.client, headers)
+    with harness.session_factory() as db:
+        product = Product(
+            company_id=company_id,
+            name="Cleared Videos",
+            slug="cleared-videos",
+            sku="ERP-VIDEO-CLEAR",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        upsert_external_resource_map(
+            db,
+            company_id=company_id,
+            resource_type="product",
+            internal_id=product.id,
+            external_id="777",
+        )
+        enqueue_product_video_sync(db, company_id=company_id, product=product)
+        db.commit()
+
+    payloads: list[dict[str, object]] = []
+
+    def mock_request(
+        method: str, url: str, json: dict | None = None, **kwargs: object
+    ) -> httpx.Response:
+        if method == "PUT" and url.endswith("/wp-json/wc/v3/products/777"):
+            payloads.append(json or {})
+            return httpx.Response(200, json={"id": 777})
+        raise AssertionError(f"Unexpected empty-video request: {method} {url}")
+
+    monkeypatch.setattr(httpx, "request", mock_request)
+    with harness.session_factory() as db:
+        assert process_sync_outbox(db, company_id)["pushed_videos"] == 1
+
+    assert payloads == [
+        {
+            "meta_data": [
+                {
+                    "key": WOOCOMMERCE_VIDEO_META_KEY,
+                    "value": {"schema_version": 1, "videos": []},
+                }
+            ]
+        }
+    ]
+
+
+def test_video_only_api_updates_queue_video_outbox_without_new_product_push(
+    harness: ApiHarness,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    configure_store(harness.client, headers)
+    created = harness.client.post(
+        "/api/v1/catalog/products",
+        headers=headers,
+        json={
+            "name": "Video Queue Product",
+            "sku": "ERP-VIDEO-QUEUE",
+            "product_type": "simple",
+            "status": "active",
+            "regular_price_minor": 100,
+            "videos": [
+                {"url": "https://vimeo.com/123456", "name": "First", "sort_order": 0},
+                {
+                    "url": "https://cdn.example.test/demo.mp4",
+                    "name": "Second",
+                    "sort_order": 1,
+                },
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    product = created.json()
+    product_id = product["id"]
+
+    reordered = [
+        {
+            "id": video["id"],
+            "url": video["url"],
+            "name": video["name"],
+            "sort_order": 1 - index,
+        }
+        for index, video in enumerate(product["videos"])
+    ]
+    updated = harness.client.patch(
+        f"/api/v1/catalog/products/{product_id}",
+        headers=headers,
+        json={"videos": reordered},
+    )
+    assert updated.status_code == 200, updated.text
+
+    with harness.session_factory() as db:
+        product_pushes = db.scalars(
+            select(SyncOutbox).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.resource_id == product_id,
+                SyncOutbox.operation == "push",
+            )
+        ).all()
+        video_pushes = db.scalars(
+            select(SyncOutbox).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.resource_id == product_id,
+                SyncOutbox.operation == "push_videos",
+            )
+        ).all()
+
+    assert len(product_pushes) == 1
+    expected_order = [video["id"] for video in reversed(product["videos"])]
+    assert any(
+        [video["id"] for video in record.payload["videos"]] == expected_order
+        for record in video_pushes
+    )
+
+    removed = harness.client.patch(
+        f"/api/v1/catalog/products/{product_id}",
+        headers=headers,
+        json={"videos": []},
+    )
+    assert removed.status_code == 200, removed.text
+    with harness.session_factory() as db:
+        video_pushes = db.scalars(
+            select(SyncOutbox).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.resource_id == product_id,
+                SyncOutbox.operation == "push_videos",
+            )
+        ).all()
+    assert any(record.payload == {"videos": []} for record in video_pushes)
+
+
+def test_uploaded_product_video_respects_wordpress_upload_limit(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    configure_store(harness.client, headers, wordpress_media=True)
+    monkeypatch.setattr(
+        woocommerce_services,
+        "get_settings",
+        lambda: SimpleNamespace(media_upload_dir=str(tmp_path)),
+    )
+    local_path = tmp_path / "products" / company_id / "limited-video" / "videos" / "demo.mp4"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"too-large-for-one-byte-limit")
+
+    with harness.session_factory() as db:
+        product = Product(
+            id="limited-video",
+            company_id=company_id,
+            name="Limited Video",
+            slug="limited-video",
+            sku="ERP-VIDEO-LIMIT",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        db.add(
+            ProductVideo(
+                company_id=company_id,
+                product_id=product.id,
+                source_type="uploaded",
+                url=f"/media/products/{company_id}/{product.id}/videos/demo.mp4",
+                name="demo.mp4",
+                sort_order=0,
+            )
+        )
+        upsert_external_resource_map(
+            db,
+            company_id=company_id,
+            resource_type="product",
+            internal_id=product.id,
+            external_id="502",
+        )
+        db.flush()
+        enqueue_product_video_sync(db, company_id=company_id, product=product)
+        db.commit()
+
+    def mock_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+        assert method == "GET"
+        assert url.endswith("/wp-json/choiceoye-erp/v1/status")
+        return httpx.Response(
+            200,
+            json={
+                "plugin": "choiceoye-erp-product-videos",
+                "version": "1.0.0",
+                "schema_versions": [1],
+                "woocommerce": True,
+                "max_upload_bytes": 1,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "request", mock_request)
+    with harness.session_factory() as db:
+        result = process_sync_outbox(db, company_id)
+        db.commit()
+        record = db.scalar(
+            select(SyncOutbox).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.operation == "push_videos",
+                SyncOutbox.resource_id == "limited-video",
+            )
+        )
+
+    assert result["failed"] == 1
+    assert record is not None
+    assert record.status == "failed"
+    assert record.last_error is not None
+    assert record.last_error.startswith(
+        "Product video exceeds the WordPress upload limit (1 bytes)."
+    )
+
+
+def test_wordpress_video_plugin_status_is_saved_without_blocking_product_sync(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    configure_store(harness.client, headers)
+
+    def mock_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+        assert method == "GET"
+        assert kwargs.get("follow_redirects") is True
+        assert url.endswith("/wp-json/choiceoye-erp/v1/status")
+        return httpx.Response(
+            200,
+            json={
+                "plugin": "choiceoye-erp-product-videos",
+                "version": "1.0.0",
+                "schema_versions": [1],
+                "woocommerce": True,
+                "max_upload_bytes": 50 * 1024 * 1024,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "request", mock_request)
+    with harness.session_factory() as db:
+        status = check_wordpress_video_plugin(db, company_id)
+        db.commit()
+
+    assert status == {
+        "detected": True,
+        "compatible": True,
+        "version": "1.0.0",
+        "max_upload_bytes": 50 * 1024 * 1024,
+    }
+    config = harness.client.get("/api/v1/woocommerce/config", headers=headers)
+    assert config.status_code == 200
+    assert config.json()["video_plugin_detected"] is True
+    assert config.json()["video_plugin_compatible"] is True
+    assert config.json()["wordpress_max_upload_bytes"] == 50 * 1024 * 1024
+
+
+def test_wordpress_video_plugin_requires_woocommerce_for_compatibility(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _token, company_id = complete_first_use_setup(harness.client)
+    configure_store(harness.client, bearer(_token))
+
+    def mock_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+        assert method == "GET"
+        assert url.endswith("/wp-json/choiceoye-erp/v1/status")
+        return httpx.Response(
+            200,
+            json={
+                "plugin": "choiceoye-erp-product-videos",
+                "version": "1.0.0",
+                "schema_versions": [1],
+                "woocommerce": False,
+                "max_upload_bytes": 50 * 1024 * 1024,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "request", mock_request)
+    with harness.session_factory() as db:
+        status = check_wordpress_video_plugin(db, company_id)
+
+    assert status["detected"] is True
+    assert status["compatible"] is False
+
+
+def test_woocommerce_product_pull_preserves_erp_owned_video_rows(harness: ApiHarness) -> None:
+    _token, company_id = complete_first_use_setup(harness.client)
+    with harness.session_factory() as db:
+        product = Product(
+            company_id=company_id,
+            name="ERP Video Owner",
+            slug="erp-video-owner",
+            sku="ERP-VIDEO-PULL",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        db.add(
+            ProductVideo(
+                company_id=company_id,
+                product_id=product.id,
+                source_type="youtube",
+                url="https://www.youtube.com/watch?v=abc123XYZ",
+                name="ERP-owned video",
+                sort_order=0,
+                sync_status="synced",
+            )
+        )
+        upsert_external_resource_map(
+            db,
+            company_id=company_id,
+            resource_type="product",
+            internal_id=product.id,
+            external_id="901",
+        )
+        db.commit()
+        product_id = product.id
+
+    with harness.session_factory() as db:
+        woocommerce_services.sync_single_product(
+            db,
+            company_id,
+            {
+                "id": 901,
+                "name": "Remote product update",
+                "sku": "ERP-VIDEO-PULL",
+                "status": "publish",
+                "regular_price": "10.00",
+                "meta_data": [
+                    {
+                        "key": WOOCOMMERCE_VIDEO_META_KEY,
+                        "value": {"schema_version": 1, "videos": []},
+                    }
+                ],
+            },
+        )
+        db.commit()
+        videos = db.scalars(
+            select(ProductVideo).where(
+                ProductVideo.company_id == company_id,
+                ProductVideo.product_id == product_id,
+            )
+        ).all()
+
+    assert len(videos) == 1
+    assert videos[0].name == "ERP-owned video"
+    assert videos[0].url == "https://www.youtube.com/watch?v=abc123XYZ"
+
+
 def test_vendor_product_outbox_enqueue_is_scoped_to_vendor(harness: ApiHarness) -> None:
     _token, company_id = complete_first_use_setup(harness.client)
     with harness.session_factory() as db:
@@ -304,9 +860,16 @@ def test_woocommerce_config_is_encrypted_and_test_success_is_mocked(
         "webhook_secret_configured": False,
         "pending_product_pushes": 0,
         "pending_media_pushes": 0,
+        "pending_video_pushes": 0,
         "failed_product_pushes": 0,
         "failed_media_pushes": 0,
+        "failed_video_pushes": 0,
         "last_media_error": None,
+        "last_video_error": None,
+        "video_plugin_detected": False,
+        "video_plugin_compatible": False,
+        "video_plugin_version": None,
+        "wordpress_max_upload_bytes": None,
         "queued_sync_runs": 0,
         "running_sync_runs": 0,
         "active_sync_run_id": None,
@@ -397,8 +960,14 @@ def test_woocommerce_config_is_encrypted_and_test_success_is_mocked(
         "status": "ok",
         "detail": (
             "WooCommerce connection succeeded. "
-            "Read access verified for products, categories, brands, customers, orders."
+            "Read access verified for products, categories, brands, customers, orders. "
+            "ChoiceOye video plugin was not detected; video metadata can sync but will not "
+            "render."
         ),
+        "video_plugin_detected": False,
+        "video_plugin_compatible": False,
+        "video_plugin_version": None,
+        "wordpress_max_upload_bytes": None,
     }
     with harness.session_factory() as db:
         setting = db.scalar(select(Setting).where(Setting.key == WOOCOMMERCE_SETTING_KEY))
@@ -765,7 +1334,14 @@ def test_product_push_crash_recovery_avoids_duplicate_remote_create(
     monkeypatch.setattr(httpx, "request", recover_remote_product)
     with harness.session_factory() as db:
         result = process_sync_outbox(db, company_id)
-        assert result == {"pushed": 1, "pushed_media": 0, "failed": 0, "deferred": 0}
+        assert result == {
+            "pushed": 1,
+            "pushed_media": 0,
+            "pushed_videos": 0,
+            "failed": 0,
+            "deferred": 0,
+            "deferred_videos": 0,
+        }
 
     with harness.session_factory() as db:
         outbox = db.get(SyncOutbox, outbox_id)
@@ -2045,8 +2621,7 @@ def test_woocommerce_sync_does_not_clear_remote_images_when_local_media_is_empty
     queued_sync, sync_data = queue_and_process_sync(harness, headers)
     assert queued_sync["status"] == "queued"
     assert sync_data["status"] == "success"
-    assert product_payloads == [
-        {
+    assert product_payloads[0] == {
             "name": "Mapped Product",
             "slug": "mapped-product",
             "sku": "ERP-200",
@@ -2074,8 +2649,15 @@ def test_woocommerce_sync_does_not_clear_remote_images_when_local_media_is_empty
             "default_attributes": [],
             "meta_data": [],
             "categories": [],
-        }
-    ]
+    }
+    assert product_payloads[1] == {
+        "meta_data": [
+            {
+                "key": WOOCOMMERCE_VIDEO_META_KEY,
+                "value": {"schema_version": 1, "videos": []},
+            }
+        ]
+    }
 
 
 def test_woocommerce_full_sync_and_webhook_receiver(

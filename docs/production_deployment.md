@@ -150,9 +150,11 @@ To remove the managed tasks during an intentional uninstall:
   poll intervals.
 - Trigger only read-only live WooCommerce checks during release verification
   unless a designated staging product is approved.
-- Keep normal WooCommerce product payloads media-free. ERP media is additive:
-  remote website images stay intact unless an ERP image is explicitly marked
-  `pending_remove`.
+- Keep normal WooCommerce product payloads media-free. ERP image and video
+  changes are separate, retryable operations: remote website images stay intact
+  unless an ERP image is explicitly marked `pending_remove`, while product
+  videos use the `choiceoye_erp_product_videos` metadata manifest and never the
+  native WooCommerce `images` array.
 
 Use [the monitoring runbook](production_monitoring_runbook.md) for request ID,
 worker, sync, backup, and incident procedures. PythonAnywhere deployment

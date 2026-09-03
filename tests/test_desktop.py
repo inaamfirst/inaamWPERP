@@ -289,6 +289,40 @@ def test_api_client_permanently_deletes_product(monkeypatch) -> None:
     ]
 
 
+def test_api_client_uploads_product_video(tmp_path, monkeypatch) -> None:
+    video_path = tmp_path / "demo.mp4"
+    video_path.write_bytes(b"video")
+    calls: list[tuple[str, dict[str, str], float, str]] = []
+
+    def fake_post(
+        url: str,
+        *,
+        headers: dict[str, str],
+        files: dict[str, tuple[str, object, str]],
+        timeout: float,
+        follow_redirects: bool,
+    ) -> FakeResponse:
+        filename, handle, content_type = files["file"]
+        assert handle.read() == b"video"
+        calls.append((url, headers, timeout, content_type))
+        assert filename == str(video_path)
+        assert follow_redirects is True
+        return FakeResponse({"id": "video-1", "url": "/media/products/demo.mp4"}, 201)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = ApiHealthClient().upload_product_video("token-1", "product-1", str(video_path))
+
+    assert result["id"] == "video-1"
+    assert calls == [
+        (
+            "http://127.0.0.1:8000/api/v1/catalog/products/product-1/videos/upload",
+            {"Authorization": "Bearer token-1"},
+            180.0,
+            "video/mp4",
+        )
+    ]
+
+
 def test_api_client_dashboard_summary(monkeypatch) -> None:
     def fake_request(
         method: str,

@@ -14,8 +14,6 @@ from erp.packages.core import marketplace_services
 from erp.packages.core.api.dependencies import DbSession, require_permission, service_error_to_http
 from erp.packages.core.api.serializers import product_out
 from erp.packages.core.auth_delivery import deliver_action_token
-from erp.packages.core.config import get_settings
-from erp.packages.core.db.models import Brand, Category, ProductImage, Role, UserRole
 from erp.packages.core.catalog_services import (
     archive_product,
     create_brand,
@@ -24,20 +22,23 @@ from erp.packages.core.catalog_services import (
     list_categories,
     permanently_delete_product,
 )
+from erp.packages.core.config import get_settings
+from erp.packages.core.db.models import Brand, Category, ProductImage, ProductVideo, Role, UserRole
 from erp.packages.core.schemas import (
     AdminVendorAccountCreate,
     AdminVendorAccountOut,
-    CommissionRuleCreate,
-    CommissionRuleOut,
-    CommissionRuleUpdate,
     BrandCreate,
     BrandOut,
     CategoryCreate,
     CategoryOut,
+    CommissionRuleCreate,
+    CommissionRuleOut,
+    CommissionRuleUpdate,
     ProductCreate,
     ProductImageOut,
     ProductOut,
     ProductUpdate,
+    ProductVideoOut,
     StatusChangeRequest,
     UserOut,
     VendorCreate,
@@ -60,7 +61,12 @@ from erp.packages.core.vendor_auth_services import (
     change_vendor_status,
     create_admin_vendor_account,
 )
-from erp.packages.core.woocommerce_services import enqueue_product_sync
+from erp.packages.core.woocommerce_services import (
+    enqueue_product_sync,
+    enqueue_product_video_sync,
+    load_woocommerce_config,
+    saved_wordpress_video_plugin_status,
+)
 
 router = APIRouter()
 
@@ -72,6 +78,10 @@ PRODUCT_IMAGE_MIME_TYPES = {
     "image/gif",
 }
 PRODUCT_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+PRODUCT_VIDEO_EXTENSION = ".mp4"
+PRODUCT_VIDEO_MIME_TYPES = {"video/mp4", "application/mp4"}
+PRODUCT_VIDEO_MAX_BYTES = 100 * 1024 * 1024
+PRODUCT_VIDEO_MAX_COUNT = 10
 
 VendorViewContext = Annotated[
     AuthContext,
@@ -147,6 +157,33 @@ def _enqueue_product_sync_if_configured(db: Session, company_id: str, product) -
         if exc.status_code == 404 and exc.message == "WooCommerce is not configured.":
             return
         raise
+
+
+def _enqueue_product_video_sync_if_configured(db: Session, company_id: str, product) -> None:
+    if load_woocommerce_config(db, company_id) is not None:
+        enqueue_product_video_sync(db, company_id=company_id, product=product)
+
+
+def _effective_product_video_upload_limit(db: Session, company_id: str) -> tuple[int, bool]:
+    remote_limit = saved_wordpress_video_plugin_status(db, company_id).get("max_upload_bytes")
+    try:
+        remote_limit_bytes = int(remote_limit) if remote_limit is not None else 0
+    except (TypeError, ValueError):
+        remote_limit_bytes = 0
+    if remote_limit_bytes > 0 and remote_limit_bytes < PRODUCT_VIDEO_MAX_BYTES:
+        return remote_limit_bytes, True
+    return PRODUCT_VIDEO_MAX_BYTES, False
+
+
+def _product_video_upload_limit_error(limit_bytes: int, is_wordpress_limit: bool) -> ServiceError:
+    if not is_wordpress_limit:
+        return ServiceError(413, "Product video is too large.")
+    limit_label = (
+        f"{limit_bytes // (1024 * 1024)} MB"
+        if limit_bytes >= 1024 * 1024
+        else f"{limit_bytes} bytes"
+    )
+    return ServiceError(413, f"Product video exceeds the WordPress upload limit ({limit_label}).")
 
 
 def _category_out(category: Category) -> CategoryOut:
@@ -600,7 +637,12 @@ def current_vendor_catalog_categories(
         raise service_error_to_http(exc) from exc
 
 
-@router.post("/vendor/catalog/categories", response_model=CategoryOut, status_code=201, tags=["vendor"])
+@router.post(
+    "/vendor/catalog/categories",
+    response_model=CategoryOut,
+    status_code=201,
+    tags=["vendor"],
+)
 def current_vendor_catalog_category_create(
     payload: CategoryCreate,
     context: VendorProductsSelfManageContext,
@@ -794,6 +836,87 @@ def current_vendor_catalog_product_image_upload(
         raise service_error_to_http(exc) from exc
 
 
+@router.post(
+    "/vendor/catalog/products/{product_id}/videos/upload",
+    response_model=ProductVideoOut,
+    status_code=201,
+    tags=["vendor"],
+)
+def current_vendor_catalog_product_video_upload(
+    product_id: str,
+    context: VendorProductsSelfManageContext,
+    db: DbSession,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+) -> ProductVideoOut:
+    target_path: Path | None = None
+    try:
+        vendor = _current_vendor(db, context)
+        product = marketplace_services.vendor_owned_product(
+            db, _company_id(context), vendor.id, product_id
+        )
+        video_count = db.query(ProductVideo).filter(ProductVideo.product_id == product.id).count()
+        if video_count >= PRODUCT_VIDEO_MAX_COUNT:
+            raise ServiceError(422, f"A product can have at most {PRODUCT_VIDEO_MAX_COUNT} videos.")
+        original_name = Path(file.filename or "product-video.mp4").name
+        suffix = Path(original_name).suffix.lower()
+        if suffix != PRODUCT_VIDEO_EXTENSION:
+            raise ServiceError(422, "Unsupported video extension. Only MP4 files are allowed.")
+        content_type = (file.content_type or mimetypes.types_map.get(suffix) or "").lower()
+        if content_type not in PRODUCT_VIDEO_MIME_TYPES:
+            raise ServiceError(422, "Unsupported video content type. Only MP4 files are allowed.")
+        upload_limit, is_wordpress_limit = _effective_product_video_upload_limit(
+            db, _company_id(context)
+        )
+
+        settings = getattr(request.app.state, "settings", get_settings())
+        relative_dir = Path("products") / product.company_id / product.id / "videos"
+        target_dir = Path(settings.media_upload_dir) / relative_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_name = f"{uuid.uuid4().hex}{suffix}"
+        target_path = target_dir / target_name
+        size = 0
+        with target_path.open("wb") as handle:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > upload_limit:
+                    raise _product_video_upload_limit_error(upload_limit, is_wordpress_limit)
+                handle.write(chunk)
+
+        video = ProductVideo(
+            company_id=product.company_id,
+            product_id=product.id,
+            source_type="uploaded",
+            url=f"/media/{relative_dir.as_posix()}/{target_name}",
+            name=original_name[:255],
+            sort_order=video_count,
+        )
+        db.add(video)
+        db.flush()
+        _enqueue_product_video_sync_if_configured(db, _company_id(context), product)
+        db.commit()
+        db.refresh(video)
+        return ProductVideoOut(
+            id=video.id,
+            product_id=video.product_id,
+            source_type=video.source_type,
+            url=video.url,
+            name=video.name,
+            sort_order=video.sort_order,
+            external_id=video.external_id,
+            remote_url=video.remote_url,
+            sync_status=video.sync_status,
+            last_synced_at=video.last_synced_at,
+            created_at=video.created_at,
+            updated_at=video.updated_at,
+        )
+    except ServiceError as exc:
+        db.rollback()
+        if target_path is not None:
+            target_path.unlink(missing_ok=True)
+        raise service_error_to_http(exc) from exc
+
+
 @router.patch("/vendor/catalog/products/{product_id}", response_model=ProductOut, tags=["vendor"])
 def current_vendor_catalog_product_update(
     product_id: str,
@@ -811,7 +934,10 @@ def current_vendor_catalog_product_update(
             product_id=product_id,
             payload=payload,
         )
-        _enqueue_product_sync_if_configured(db, _company_id(context), product)
+        if set(payload.model_fields_set) == {"videos"}:
+            _enqueue_product_video_sync_if_configured(db, _company_id(context), product)
+        else:
+            _enqueue_product_sync_if_configured(db, _company_id(context), product)
         db.commit()
         return product_out(db, product)
     except ServiceError as exc:
