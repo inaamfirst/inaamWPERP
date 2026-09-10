@@ -6,6 +6,7 @@ import {
   ACCOUNT_STATUSES,
   type AccountStatus,
   type Permission,
+  type PendingRegistration,
   type Role,
   type RoleForm,
   type User,
@@ -378,6 +379,132 @@ export function UserList({
             </tbody>
           </table>
         </div>
+      )}
+    </section>
+  );
+}
+
+export function PendingRegistrationList({
+  registrations,
+  roles,
+  selectedRoleIds,
+  loading,
+  actionId,
+  onToggleRole,
+  onApprove,
+  onReject,
+}: {
+  registrations: PendingRegistration[];
+  roles: Role[];
+  selectedRoleIds: Record<string, string[]>;
+  loading: boolean;
+  actionId: string | null;
+  onToggleRole: (registration: PendingRegistration, roleId: string) => void;
+  onApprove: (registration: PendingRegistration) => void;
+  onReject: (registration: PendingRegistration) => void;
+}) {
+  return (
+    <section className={styles.panel} aria-labelledby="pending-registrations-title">
+      <div className={identityStyles.queueHeader}>
+        <div>
+          <div className={styles.eyebrow}>Approval queue</div>
+          <h2 id="pending-registrations-title" className={identityStyles.sectionTitle}>
+            Pending registrations
+          </h2>
+        </div>
+        <span className={`${styles.badge} ${styles.badgeWarning}`}>
+          {loading ? "Loading" : `${registrations.length} awaiting review`}
+        </span>
+      </div>
+      {loading ? (
+        <LoadingState label="Loading pending registrations" />
+      ) : registrations.length === 0 ? (
+        <EmptyState
+          title="No pending registrations"
+          description="New staff and vendor requests will appear here for review."
+        />
+      ) : (
+        <div className={styles.tableWrap}>
+          <table className={`${styles.table} ${styles.mobileCardTable}`}>
+          <caption className={styles.srOnly}>
+            Public registration requests awaiting administrator approval
+          </caption>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Applicant</th>
+              <th>Vendor details</th>
+              <th>Assign roles</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {registrations.map((registration) => {
+              const selected = selectedRoleIds[registration.id] || [];
+              const vendor = registration.vendor_profile;
+              const busy = actionId === registration.id;
+              return (
+                <tr key={registration.id}>
+                  <td data-label="Type">
+                    <span className={`${styles.badge} ${styles.badgeWarning}`}>
+                      {registration.registration_type}
+                    </span>
+                  </td>
+                  <td data-label="Applicant">
+                    <strong>{registration.username}</strong>
+                    <div className={styles.muted}>{registration.email || "No email"}</div>
+                    {registration.full_name && <div className={styles.muted}>{registration.full_name}</div>}
+                  </td>
+                  <td data-label="Vendor details">
+                    {vendor ? (
+                      <>
+                        <strong>{vendor.name}</strong>
+                        {vendor.contact_name && <div className={styles.muted}>{vendor.contact_name}</div>}
+                        {(vendor.email || vendor.phone) && (
+                          <div className={styles.muted}>{[vendor.email, vendor.phone].filter(Boolean).join(" · ")}</div>
+                        )}
+                      </>
+                    ) : "—"}
+                  </td>
+                  <td data-label="Assign roles">
+                    <div className={identityStyles.roleGrid}>
+                      {roles.map((role) => {
+                        const isVendorRole = registration.registration_type === "vendor" && role.name === "Vendor";
+                        return (
+                          <label key={role.id} className={identityStyles.checkboxRow}>
+                            <input
+                              type="checkbox"
+                              checked={selected.includes(role.id)}
+                              disabled={busy || isVendorRole}
+                              onChange={() => onToggleRole(registration, role.id)}
+                            />
+                            {role.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </td>
+                  <td data-label="Actions">
+                    <div className={styles.toolbarActions}>
+                      <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => onApprove(registration)}>
+                        {busy ? "Saving..." : "Approve"}
+                      </button>
+                      <button type="button" className={styles.secondaryButton} disabled={busy} onClick={() => onReject(registration)}>
+                        Reject
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {registrations.length > 0 && (
+        <p className={styles.muted}>
+          Staff requests require at least one role. Vendor requests always retain the restricted Vendor role.
+        </p>
       )}
     </section>
   );

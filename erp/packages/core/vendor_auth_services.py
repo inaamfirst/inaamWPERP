@@ -14,7 +14,11 @@ from erp.packages.core.db.models import (
     Vendor,
     VendorUser,
 )
-from erp.packages.core.schemas import AdminVendorAccountCreate, VendorRegistrationRequest
+from erp.packages.core.schemas import (
+    AdminVendorAccountCreate,
+    UserRegistrationRequest,
+    VendorRegistrationRequest,
+)
 from erp.packages.core.security import generate_session_token, hash_password
 from erp.packages.core.services import (
     VENDOR_SELF_SERVICE_PERMISSIONS,
@@ -40,6 +44,11 @@ class CreatedVendorAccount:
     activation_expires_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class CreatedUserAccount:
+    user: User
+
+
 def unique_vendor_slug(db: Session, company_id: str, name: str) -> str:
     base = normalize_company_slug(name)[:150] or "vendor"
     slug = base
@@ -61,7 +70,9 @@ def ensure_vendor_role(db: Session, company_id: str) -> Role:
         role = db.scalar(
             select(Role).where(Role.company_id == company_id, Role.name == "Vendor")
         )
-        
+    if role is None:
+        raise ServiceError(500, "The Vendor role is not configured for this workspace.")
+
     _backfill_unambiguous_vendor_users(db, company_id=company_id, role=role)
     db.flush()
     return role
@@ -115,23 +126,67 @@ def validate_new_identity(
     email: str | None,
 ) -> None:
     if db.scalar(select(User.id).where(User.company_id == company_id, User.username == username)):
-        raise ServiceError(409, "Registration could not be completed.")
+        raise ServiceError(409, "The supplied login details are already in use.")
     if email and db.scalar(select(User.id).where(User.email == email)):
-        raise ServiceError(409, "Registration could not be completed.")
+        raise ServiceError(409, "The supplied login details are already in use.")
+
+
+def _active_company_for_workspace(db: Session, workspace_slug: str) -> Company:
+    company = db.scalar(
+        select(Company).where(
+            Company.slug == normalize_company_slug(workspace_slug),
+            Company.status == "active",
+        )
+    )
+    if company is None:
+        raise ServiceError(404, "Workspace was not found.")
+    return company
+
+
+def register_public_user(
+    db: Session,
+    payload: UserRegistrationRequest,
+) -> CreatedUserAccount:
+    """Create a role-less staff request that remains blocked until approval."""
+
+    company = _active_company_for_workspace(db, payload.workspace_slug)
+    validate_new_identity(
+        db,
+        company_id=company.id,
+        username=payload.username,
+        email=payload.email,
+    )
+    user = User(
+        company_id=company.id,
+        username=payload.username,
+        email=payload.email,
+        full_name=payload.full_name,
+        password_hash=hash_password(payload.password),
+        is_active=True,
+        account_status="pending",
+        must_change_password=False,
+        password_changed_at=utcnow(),
+    )
+    db.add(user)
+    db.flush()
+    record_audit(
+        db,
+        action="identity.user_registered",
+        company_id=company.id,
+        user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={"source": "public", "status": "pending", "account_type": "staff"},
+    )
+    db.flush()
+    return CreatedUserAccount(user=user)
 
 
 def register_public_vendor(
     db: Session,
     payload: VendorRegistrationRequest,
 ) -> CreatedVendorAccount:
-    company = db.scalar(
-        select(Company).where(
-            Company.slug == normalize_company_slug(payload.workspace_slug),
-            Company.status == "active",
-        )
-    )
-    if company is None:
-        raise ServiceError(404, "Workspace was not found.")
+    company = _active_company_for_workspace(db, payload.workspace_slug)
     validate_new_identity(
         db,
         company_id=company.id,

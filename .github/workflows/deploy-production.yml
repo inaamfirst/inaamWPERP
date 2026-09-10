@@ -1,0 +1,54 @@
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Exact commit to deploy (must already be on main)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Validate requested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          if ! [[ "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'commit must be a full 40-character SHA' >&2
+            exit 1
+          fi
+          git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/heads/main" "${REQUESTED_COMMIT}^{commit}" >/tmp/refs
+          grep -q "${REQUESTED_COMMIT}" /tmp/refs
+      - name: Install deployment SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      - name: Configure host verification
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Run guarded server deployment
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          test -n "$DEPLOY_HOST" -a -n "$DEPLOY_USER" -a -n "$DEPLOY_PORT"
+          ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "sudo /usr/local/sbin/inaam-erp-deploy --commit $COMMIT"

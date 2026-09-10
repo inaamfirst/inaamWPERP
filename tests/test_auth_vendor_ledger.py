@@ -253,6 +253,146 @@ def test_public_vendor_registration_approval_pause_and_tenant_isolation(
     assert harness.client.get("/api/v1/vendor/me", headers=bearer(vendor_token)).status_code == 401
 
 
+def test_public_staff_registration_queue_approval_and_duplicate_conflict(
+    harness: Harness,
+) -> None:
+    admin = setup(harness)
+    admin_headers = bearer(str(admin["access_token"]))
+    payload = {
+        "workspace_slug": "ledger-test",
+        "username": "pending_staff",
+        "email": "pending-staff@example.com",
+        "password": "staff12345",
+        "full_name": "Pending Staff",
+    }
+    registration = harness.client.post("/api/v1/auth/register/user", json=payload)
+    assert registration.status_code == 201, registration.text
+    assert registration.json()["account_status"] == "pending"
+
+    forbidden_roles = harness.client.post(
+        "/api/v1/auth/register/user",
+        json={**payload, "username": "public_role_attempt", "role_ids": ["administrator"]},
+    )
+    assert forbidden_roles.status_code == 422
+
+    duplicate = harness.client.post("/api/v1/auth/register/user", json=payload)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "The supplied login details are already in use."
+
+    pending_login = harness.client.post(
+        "/api/v1/auth/login",
+        json={
+            "workspace_slug": "ledger-test",
+            "username": "pending_staff",
+            "password": "staff12345",
+        },
+    )
+    assert pending_login.status_code == 403
+
+    pending = harness.client.get(
+        "/api/v1/identity/registrations/pending", headers=admin_headers
+    )
+    assert pending.status_code == 200
+    pending_row = next(row for row in pending.json() if row["username"] == "pending_staff")
+    assert pending_row["registration_type"] == "staff"
+    assert pending_row["role_ids"] == []
+
+    roles = harness.client.get("/api/v1/identity/roles", headers=admin_headers)
+    assert roles.status_code == 200
+    selected_role = next(role for role in roles.json() if role["name"] != "Administrator")
+    approved = harness.client.post(
+        f"/api/v1/identity/registrations/{pending_row['id']}/approve",
+        headers=admin_headers,
+        json={"role_ids": [selected_role["id"]]},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["account_status"] == "active"
+    assert approved.json()["role_ids"] == [selected_role["id"]]
+
+    active_login = harness.client.post(
+        "/api/v1/auth/login",
+        json={
+            "workspace_slug": "ledger-test",
+            "username": "pending_staff",
+            "password": "staff12345",
+        },
+    )
+    assert active_login.status_code == 200
+
+
+def test_registration_queue_reject_stops_vendor_and_user(harness: Harness) -> None:
+    admin = setup(harness)
+    admin_headers = bearer(str(admin["access_token"]))
+    registration = harness.client.post(
+        "/api/v1/auth/register/vendor",
+        json={
+            "workspace_slug": "ledger-test",
+            "business_name": "Rejected Vendor",
+            "username": "rejected_vendor",
+            "email": "rejected-vendor@example.com",
+            "password": "vendor12345",
+        },
+    )
+    assert registration.status_code == 201
+    pending = harness.client.get(
+        "/api/v1/identity/registrations/pending", headers=admin_headers
+    )
+    row = next(item for item in pending.json() if item["username"] == "rejected_vendor")
+    rejected = harness.client.post(
+        f"/api/v1/identity/registrations/{row['id']}/reject",
+        headers=admin_headers,
+        json={"reason": "Not eligible"},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["account_status"] == "stopped"
+    assert rejected.json()["vendor_profile"]["status"] == "stopped"
+    assert harness.client.post(
+        "/api/v1/auth/login",
+        json={
+            "workspace_slug": "ledger-test",
+            "username": "rejected_vendor",
+            "password": "vendor12345",
+        },
+    ).status_code == 403
+
+
+def test_registration_queue_approve_activates_vendor(harness: Harness) -> None:
+    admin = setup(harness)
+    admin_headers = bearer(str(admin["access_token"]))
+    registration = harness.client.post(
+        "/api/v1/auth/register/vendor",
+        json={
+            "workspace_slug": "ledger-test",
+            "business_name": "Approved Vendor",
+            "username": "approved_vendor",
+            "email": "approved-vendor@example.com",
+            "password": "vendor12345",
+        },
+    )
+    assert registration.status_code == 201
+    pending = harness.client.get(
+        "/api/v1/identity/registrations/pending", headers=admin_headers
+    )
+    row = next(item for item in pending.json() if item["username"] == "approved_vendor")
+    approved = harness.client.post(
+        f"/api/v1/identity/registrations/{row['id']}/approve",
+        headers=admin_headers,
+        json={},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["account_status"] == "active"
+    assert approved.json()["vendor_profile"]["status"] == "active"
+    assert approved.json()["role_names"] == ["Vendor"]
+    assert harness.client.post(
+        "/api/v1/auth/login",
+        json={
+            "workspace_slug": "ledger-test",
+            "username": "approved_vendor",
+            "password": "vendor12345",
+        },
+    ).status_code == 200
+
+
 def test_admin_created_vendor_is_active_and_temporary_password_must_change(
     harness: Harness,
 ) -> None:
@@ -669,6 +809,30 @@ def test_vendor_self_service_catalog_stock_and_item_fulfilment(harness: Harness)
     assert product_body["status"] == "active"
     assert product_body["visibility"] == "visible"
     assert product_body["vendor_id"] == registration["vendor_id"]
+    vendor_video = harness.client.patch(
+        f"/api/v1/vendor/catalog/products/{product_body['id']}",
+        headers=vendor_headers,
+        json={"videos": [{"url": "https://vimeo.com/123456", "sort_order": 0}]},
+    )
+    assert vendor_video.status_code == 200, vendor_video.text
+    assert vendor_video.json()["videos"][0]["source_type"] == "vimeo"
+    vendor_upload = harness.client.post(
+        f"/api/v1/vendor/catalog/products/{product_body['id']}/videos/upload",
+        headers=vendor_headers,
+        files={"file": ("vendor.mp4", b"video", "video/mp4")},
+    )
+    assert vendor_upload.status_code == 201, vendor_upload.text
+    unowned_product = harness.client.post(
+        "/api/v1/catalog/products",
+        headers=admin_headers,
+        json={"name": "Admin-only product", "regular_price_minor": 100},
+    ).json()
+    forbidden_video_upload = harness.client.post(
+        f"/api/v1/vendor/catalog/products/{unowned_product['id']}/videos/upload",
+        headers=vendor_headers,
+        files={"file": ("forbidden.mp4", b"video", "video/mp4")},
+    )
+    assert forbidden_video_upload.status_code == 404
     assert "Vendor Live Product" in harness.client.get("/store/ledger-test").text
     assert "Self Service Shop" in harness.client.get("/store/ledger-test").text
     assert (

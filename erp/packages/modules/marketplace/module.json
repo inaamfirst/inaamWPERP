@@ -71,7 +71,9 @@
     "vendor.ledger.view",
     "vendor.stock.view",
     "vendor.reports.view",
-    "vendor.stock.manage"
+    "vendor.stock.manage",
+    "vendor.shop.purchases.manage",
+    "vendor.shop.accounting.view"
   ],
   "release_note": "Vendor onboarding, approval, scoped portal access, inventory, and ledger APIs are implemented; deployment still requires migration and reconciliation.",
   "release_status": "foundation_only",

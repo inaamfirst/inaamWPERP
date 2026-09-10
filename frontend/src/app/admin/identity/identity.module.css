@@ -41,6 +41,14 @@
   letter-spacing: -0.02em;
 }
 
+.queueHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
 .form,
 .roleForm {
   display: grid;
@@ -179,6 +187,10 @@
   .fieldset,
   .permissionFieldset {
     padding: var(--space-3);
+  }
+
+  .queueHeader {
+    flex-direction: column;
   }
 }
 

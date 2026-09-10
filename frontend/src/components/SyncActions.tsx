@@ -22,6 +22,7 @@ type SyncRun = {
     pending_product_pushes?: number;
     pending_media_pushes?: number;
   };
+  next_attempt_at?: string | null;
 };
 
 function errorMessage(value: unknown): string {
@@ -56,7 +57,7 @@ export default function SyncActions() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const canSync = permissions.includes("woocommerce.sync") || permissions.includes("vendor.products.manage");
+  const canSync = permissions.includes("woocommerce.sync");
   const isVendor = user?.role_names?.includes("Vendor") && !user.role_names.includes("Administrator");
 
   useEffect(() => {
@@ -122,24 +123,20 @@ export default function SyncActions() {
     }
   }
 
-  if (!canSync) return null;
+  if (!canSync && !isVendor) return null;
 
   return (
     <section className={styles.panel} aria-labelledby="sync-actions-title">
       <h2 className={styles.panelTitle} id="sync-actions-title">WooCommerce sync</h2>
-      <p className={styles.muted}>
-        {isVendor
-          ? "Sync your products and vendor-owned content only."
-          : "Sync the company catalog and WooCommerce content."}
-      </p>
-      <div className={styles.formActions}>
+      <p className={styles.muted}>{isVendor ? "Your approved product changes are queued and published automatically through the shared WooCommerce lane." : "Sync the company catalog and WooCommerce content."}</p>
+      {canSync && <div className={styles.formActions}>
         <button type="button" className={styles.secondaryButton} disabled={busy} onClick={() => void startSync("products")}>
           Sync Products
         </button>
         <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => void startSync("incremental")}>
           Sync All Content
         </button>
-      </div>
+      </div>}
       {message && <div className={styles.notice} role="status">{message}</div>}
       {error && <div className={styles.error} role="alert">{error}</div>}
     </section>

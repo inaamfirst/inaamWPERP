@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Deploy one already-pushed main-branch commit to the existing Inaam ERP host.
+# Install this file as root at /usr/local/sbin/inaam-erp-deploy.
+set -Eeuo pipefail
+
+CONFIG_FILE="${CONFIG_FILE:-/etc/inaam-erp/release.env}"
+
+usage() {
+  echo "Usage: $0 --commit <40-character-git-sha>" >&2
+  exit 64
+}
+
+[[ "$(id -u)" == "0" ]] || { echo "Run as root." >&2; exit 1; }
+[[ -r "$CONFIG_FILE" ]] || { echo "Missing $CONFIG_FILE." >&2; exit 1; }
+[[ $# == 2 && "$1" == "--commit" && "$2" =~ ^[0-9a-f]{40}$ ]] || usage
+TARGET_COMMIT="$2"
+
+# release.env is root-owned deployment configuration, not repository input.
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+: "${APP_ROOT:?APP_ROOT is required}"
+: "${APP_USER:?APP_USER is required}"
+: "${ENV_FILE:?ENV_FILE is required}"
+: "${HEALTH_URL:?HEALTH_URL is required}"
+: "${BRANCH:=main}"
+: "${BACKUP_ROOT:=/var/lib/inaam-erp/release-backups}"
+SERVICES=(inaam-erp-api inaam-erp-frontend inaam-erp-worker)
+
+[[ -d "$APP_ROOT/.git" ]] || { echo "$APP_ROOT is not a Git checkout." >&2; exit 1; }
+[[ -r "$ENV_FILE" ]] || { echo "Missing application environment file $ENV_FILE." >&2; exit 1; }
+id "$APP_USER" >/dev/null
+git -c safe.directory="$APP_ROOT" -C "$APP_ROOT" diff --quiet || {
+  echo "Refusing to overwrite local server changes in $APP_ROOT." >&2; exit 1;
+}
+
+PREVIOUS_COMMIT="$(git -C "$APP_ROOT" rev-parse HEAD)"
+git -C "$APP_ROOT" fetch --prune origin "$BRANCH"
+git -C "$APP_ROOT" cat-file -e "$TARGET_COMMIT^{commit}"
+git -C "$APP_ROOT" merge-base --is-ancestor "$TARGET_COMMIT" "origin/$BRANCH" || {
+  echo "Requested commit is not contained in origin/$BRANCH." >&2; exit 1;
+}
+if git -C "$APP_ROOT" diff --name-only "$PREVIOUS_COMMIT" "$TARGET_COMMIT" -- pyproject.toml | grep -q .; then
+  echo "pyproject.toml changed. Update Python dependencies in a separately reviewed release first." >&2
+  exit 1
+fi
+if [[ "$PREVIOUS_COMMIT" == "$TARGET_COMMIT" ]]; then
+  echo "Already running $TARGET_COMMIT."
+  exit 0
+fi
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_DIR="$BACKUP_ROOT/$STAMP-$PREVIOUS_COMMIT"
+install -d -m 0700 "$BACKUP_DIR"
+cp "$CONFIG_FILE" "$BACKUP_DIR/release.env"
+printf '%s\n' "$PREVIOUS_COMMIT" > "$BACKUP_DIR/previous-commit"
+printf '%s\n' "$TARGET_COMMIT" > "$BACKUP_DIR/target-commit"
+
+# Application environment is trusted server configuration. Loading it here
+# keeps database credentials out of Git and command-line output.
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+: "${ERP_DATABASE_URL:?ERP_DATABASE_URL is required in $ENV_FILE}"
+PG_DSN="${ERP_DATABASE_URL/postgresql+psycopg:/postgresql:}"
+pg_dump --format=custom --file="$BACKUP_DIR/database.dump" "$PG_DSN"
+chmod 0600 "$BACKUP_DIR/database.dump"
+
+release_started=0
+rollback() {
+  local failed_status="$1"
+  echo "Release failed; restoring $PREVIOUS_COMMIT and $BACKUP_DIR/database.dump." >&2
+  systemctl stop "${SERVICES[@]}" || true
+  git -C "$APP_ROOT" checkout --detach "$PREVIOUS_COMMIT" || true
+  chown -R "$APP_USER:$APP_USER" "$APP_ROOT" || true
+  runuser -u "$APP_USER" -- bash -lc "cd '$APP_ROOT/frontend' && npm ci && npm run build" || true
+  pg_restore --clean --if-exists --no-owner --dbname="$PG_DSN" "$BACKUP_DIR/database.dump" || true
+  systemctl start "${SERVICES[@]}" || true
+  exit "$failed_status"
+}
+on_error() {
+  local failed_status="$?"
+  if [[ "$release_started" == 1 ]]; then
+    rollback "$failed_status"
+  fi
+  exit "$failed_status"
+}
+trap on_error ERR
+
+git -C "$APP_ROOT" checkout --detach "$TARGET_COMMIT"
+release_started=1
+chown -R "$APP_USER:$APP_USER" "$APP_ROOT"
+runuser -u "$APP_USER" -- bash -lc "cd '$APP_ROOT/frontend' && npm ci && npm run build"
+
+# Stop writers before the migration. The app's normal migration entry point
+# receives the secret environment file without printing it.
+systemctl stop "${SERVICES[@]}"
+runuser -u "$APP_USER" -- env ERP_CONFIG_FILE="$ENV_FILE" ERP_MIGRATE_ONLY=1 \
+  "$APP_ROOT/.venv/bin/erp-api"
+systemctl start "${SERVICES[@]}"
+systemctl is-active --quiet "${SERVICES[@]}" nginx
+curl --fail --silent --show-error --retry 3 --retry-delay 2 "$HEALTH_URL" >/dev/null
+trap - ERR
+
+printf 'Deployed %s; backup retained at %s\n' "$TARGET_COMMIT" "$BACKUP_DIR"

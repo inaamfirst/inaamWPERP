@@ -9,6 +9,7 @@ const CSRF_COOKIE = "erp_bff_csrf";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const PUBLIC_MUTATIONS = new Set([
   "auth/login",
+  "auth/register/user",
   "auth/register/vendor",
   "auth/password-reset/request",
   "auth/password-reset/confirm",

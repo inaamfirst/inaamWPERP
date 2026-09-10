@@ -101,3 +101,36 @@ test("administrator can navigate the responsive identity workspace by keyboard",
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations.filter((violation) => ["serious", "critical"].includes(violation.impact || ""))).toEqual([]);
 });
+
+test("public registration requests a staff account without exposing roles", async ({ page }) => {
+  await page.unroute("**/api/backend/**");
+  await page.route("**/api/backend/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/auth/register/user")) {
+      await route.fulfill({
+        status: 201,
+        json: {
+          user_id: "pending-staff",
+          account_status: "pending",
+          message: "Registration received.",
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto("/register");
+  await expect(page.getByRole("heading", { name: "Request an account" })).toBeVisible();
+  await expect(page.getByText("staging", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Staff" }).click();
+  await page.getByLabel("Full name").fill("New Staff");
+  await page.getByLabel("Email").fill("new-staff@example.com");
+  await page.getByLabel("Username").fill("new_staff");
+  await page.getByLabel("Password", { exact: true }).fill("staff12345");
+  await page.getByLabel("Confirm password").fill("staff12345");
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await page.getByRole("button", { name: "Request staff account" }).click();
+  await expect(page.getByRole("heading", { name: "Request received" })).toBeVisible();
+  await expect(page.getByText(/pending administrator approval/i)).toBeVisible();
+});

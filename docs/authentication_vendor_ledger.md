@@ -20,11 +20,16 @@ Legacy vendor values are migrated as `approved` to `active`, `suspended` to
 `paused`, and `rejected` to `stopped`. API input accepts those aliases during
 the compatibility window but output uses canonical values.
 
-Public registrations use `/register` or `POST /api/v1/auth/register/vendor`.
-They create a Vendor role, a pending user, a pending vendor, and a tenant-bound
-`VendorUser` link in one transaction. Administrator-created vendor accounts are
-active immediately. They use either a one-time activation link or a temporary
-password that must be changed before protected features can be used.
+Public registrations use `/register`, `POST /api/v1/auth/register/user`, or
+`POST /api/v1/auth/register/vendor`. Both public flows create pending requests;
+staff requests receive no roles, while vendor requests receive only the
+restricted Vendor role and a tenant-bound `VendorUser` link. The administrator
+reviews all requests in `GET /api/v1/identity/registrations/pending` and can
+approve or reject them through the matching Identity endpoints. Staff approval
+requires an administrator-selected role; vendor approval activates both the
+user and vendor profile. Rejection stops the account and revokes sessions.
+Administrator-created vendor and staff accounts remain active immediately. No
+email verification or customer portal is required.
 
 ## Sessions and password lifecycle
 
@@ -133,6 +138,31 @@ Public pages are `/login`, `/register`, `/forgot-password`, `/activate`,
 `/reset-password`, and `/account`. State-changing web forms use SameSite
 cookies and CSRF tokens; production cookies are Secure when HTTPS enforcement
 is enabled.
+
+### Staging rollout
+
+The registration queue is an application-only change and does not rebuild or
+delete the existing PostgreSQL database. After pushing the release, update the
+Droplet with the repository’s current `main` commit, then run:
+
+```bash
+cd /opt/inaam-erp
+git fetch origin main
+git checkout --detach origin/main
+chown -R erp:erp /opt/inaam-erp
+runuser -u erp -- bash -lc 'cd /opt/inaam-erp/frontend && npm ci && npm run build'
+set -a
+. /etc/inaam-erp/staging.env
+set +a
+/opt/inaam-erp/.venv/bin/alembic upgrade head
+systemctl restart inaam-erp-api inaam-erp-frontend inaam-erp-worker
+systemctl is-active inaam-erp-api inaam-erp-frontend inaam-erp-worker nginx
+curl -fsS https://erp.choiceoye.com/api/v1/health
+```
+
+Verify `/register`, a pending staff/vendor request, administrator approval or
+rejection in **Admin → Identity**, and the resulting login behavior. Keep the
+completed DigitalOcean snapshot available as rollback protection.
 
 The desktop vendor workspace contains Overview, Stock, Stock Movements,
 Products, Orders/Sales, Financial Ledger, Settlements, Reports, Linked Users,

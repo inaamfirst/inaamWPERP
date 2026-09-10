@@ -212,7 +212,7 @@ def seed_default_roles(db: Session, company_id: str | None) -> None:
                     db.add(RolePermission(role_id=role.id, permission_id=permissions[perm_key].id))
                     added_role_permissions = True
         else:
-            if config["overwrite"]:
+            if config["overwrite"] or role_name == VENDOR_ROLE_NAME:
                 existing_permission_ids = set(
                     db.scalars(
                         select(RolePermission.permission_id).where(

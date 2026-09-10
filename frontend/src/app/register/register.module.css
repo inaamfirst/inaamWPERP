@@ -1,0 +1,55 @@
+.switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+  margin-bottom: var(--space-5);
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.switchButton {
+  min-height: var(--control-md);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.switchButton.selected {
+  background: var(--surface);
+  color: var(--brand-700);
+  box-shadow: var(--shadow-sm);
+}
+
+.workspace {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--text-subtle);
+  font-size: var(--text-sm);
+}
+
+.workspace span { color: var(--text); font-weight: 750; }
+
+.linkButton {
+  min-height: var(--touch-target);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand-700);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.linkButton:hover { text-decoration: underline; text-underline-offset: 0.2em; }

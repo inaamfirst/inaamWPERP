@@ -1,0 +1,13 @@
+@{
+    # Copy this file to deploy-production.local.psd1. It is intentionally ignored by Git.
+    # github-actions is recommended when the Droplet's SSH port is not reachable from your PC.
+    Transport = 'github-actions'
+    Repository = 'inaamfirst/inaamWPERP'
+    Workflow  = 'deploy-production.yml'
+    Host      = '159.65.129.218'
+    User      = 'erp-deploy'
+    Port      = 22
+    KeyPath   = 'C:\Users\YOUR_WINDOWS_USER\.ssh\id_ed25519'
+    Branch    = 'main'
+    HealthUrl = 'https://YOUR_ERP_DOMAIN/api/v1/health'
+}

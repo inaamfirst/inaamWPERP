@@ -84,3 +84,16 @@ def test_request_size_limit_rejects_oversized_bodies_before_endpoint_processing(
     assert_diagnostic_envelope(response, status_code=413, operation="POST /body-check")
     assert response.json()["detail"] == "Request body exceeds the configured maximum size."
     assert received_sizes == [6]
+
+
+def test_product_video_upload_route_allows_its_larger_bounded_body() -> None:
+    client = TestClient(create_app(Settings(max_request_size_mb=1)))
+
+    response = client.post(
+        "/api/v1/catalog/products/product-1/videos/upload",
+        files={"file": ("video.mp4", b"x" * (1024 * 1024 + 1), "video/mp4")},
+    )
+
+    # Authentication rejects the request, which proves the route-specific
+    # upload allowance accepted the multipart body instead of returning 413.
+    assert response.status_code == 401

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
-from erp.packages.core import commerce_services, ledger_services
+from erp.packages.core import commerce_services, ledger_services, shop_services
 from erp.packages.core.api.dependencies import (
     DbSession,
     require_any_permission,
@@ -26,6 +26,10 @@ from erp.packages.core.schemas import (
     StockReservationOut,
     SupportContactCreate,
     SupportContactOut,
+    ShopPublicationBulkUpdate,
+    ShopPurchaseCreate,
+    ShopPurchasePaymentCreate,
+    ShopSupplierCreate,
 )
 from erp.packages.core.services import AuthContext, ServiceError
 
@@ -57,6 +61,12 @@ VendorCommerceStockContext = Annotated[
 ]
 VendorCommerceOrderContext = Annotated[
     AuthContext, Depends(require_permission("vendor.orders.manage"))
+]
+VendorShopPurchaseContext = Annotated[
+    AuthContext, Depends(require_permission("vendor.shop.purchases.manage"))
+]
+VendorShopAccountingContext = Annotated[
+    AuthContext, Depends(require_permission("vendor.shop.accounting.view"))
 ]
 SupportManageContext = Annotated[AuthContext, Depends(require_permission("settings.manage"))]
 
@@ -214,6 +224,91 @@ def admin_channel_listing_update(
         raise service_error_to_http(exc) from exc
 
 
+def _supplier_out(row) -> dict[str, object]:
+    return {"id": row.id, "name": row.name, "contact_name": row.contact_name, "email": row.email,
+            "phone": row.phone, "address": row.address, "is_active": row.is_active}
+
+
+def _purchase_out(row) -> dict[str, object]:
+    return {"id": row.id, "purchase_number": row.purchase_number, "supplier_id": row.supplier_id,
+            "warehouse_id": row.warehouse_id, "status": row.status, "payment_status": row.payment_status,
+            "total_minor": row.total_minor, "paid_minor": row.paid_minor, "currency": row.currency,
+            "notes": row.notes, "created_at": row.created_at}
+
+
+@router.put("/commerce/vendor/products/channels/bulk", response_model=list[ProductChannelListingOut], tags=["commerce"])
+def vendor_channel_listing_bulk_update(
+    payload: ShopPublicationBulkUpdate, context: VendorCommerceProductContext, db: DbSession
+) -> list[ProductChannelListingOut]:
+    try:
+        vendor_id = _vendor_id(db, context)
+        rows = []
+        for product_id in payload.product_ids:
+            rows.append(commerce_services.upsert_channel_listing(
+                db, company_id=context.user.company_id, user_id=context.user.id, product_id=product_id,
+                payload=ProductChannelListingCreate(listing_status=payload.listing_status), vendor_id=vendor_id,
+            ))
+        db.commit()
+        return [_listing_out(row) for row in rows]
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.get("/commerce/vendor/shop/suppliers", tags=["commerce"])
+def vendor_shop_suppliers(context: VendorShopPurchaseContext, db: DbSession) -> list[dict[str, object]]:
+    return [_supplier_out(row) for row in shop_services.list_suppliers(db, context.user.company_id, _vendor_id(db, context))]
+
+
+@router.post("/commerce/vendor/shop/suppliers", status_code=201, tags=["commerce"])
+def vendor_shop_supplier_create(payload: ShopSupplierCreate, context: VendorShopPurchaseContext, db: DbSession) -> dict[str, object]:
+    try:
+        row = shop_services.create_supplier(db, company_id=context.user.company_id, vendor_id=_vendor_id(db, context), user_id=context.user.id, payload=payload)
+        db.commit()
+        return _supplier_out(row)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.post("/commerce/vendor/shop/purchases", status_code=201, tags=["commerce"])
+def vendor_shop_purchase_create(payload: ShopPurchaseCreate, context: VendorShopPurchaseContext, db: DbSession) -> dict[str, object]:
+    try:
+        row = shop_services.create_purchase(db, company_id=context.user.company_id, vendor_id=_vendor_id(db, context), user_id=context.user.id, payload=payload)
+        db.commit()
+        return _purchase_out(row)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.post("/commerce/vendor/shop/purchases/{purchase_id}/payments", tags=["commerce"])
+def vendor_shop_purchase_payment(purchase_id: str, payload: ShopPurchasePaymentCreate, context: VendorShopPurchaseContext, db: DbSession) -> dict[str, object]:
+    try:
+        row = shop_services.pay_purchase(db, company_id=context.user.company_id, vendor_id=_vendor_id(db, context), user_id=context.user.id, purchase_id=purchase_id, payload=payload)
+        db.commit()
+        return _purchase_out(row)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.get("/commerce/vendor/shop/accounting", tags=["commerce"])
+def vendor_shop_accounting(context: VendorShopAccountingContext, db: DbSession) -> dict[str, object]:
+    return shop_services.overview(db, context.user.company_id, _vendor_id(db, context))
+
+
+@router.get("/commerce/admin/vendors/{vendor_id}/shop", tags=["commerce"])
+def admin_vendor_shop(vendor_id: str, context: AdminCommerceContext, db: DbSession) -> dict[str, object]:
+    warehouse = shop_services.vendor_shop_warehouse(db, context.user.company_id, vendor_id)
+    db.commit()
+    return {
+        "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
+        "accounting": shop_services.overview(db, context.user.company_id, vendor_id),
+        "suppliers": [_supplier_out(row) for row in shop_services.list_suppliers(db, context.user.company_id, vendor_id)],
+        "stock": commerce_services.list_vendor_stock(db, context.user.company_id, vendor_id),
+    }
+
 @router.get("/commerce/vendor/stock", response_model=list[dict[str, object]], tags=["commerce"])
 def vendor_stock(context: VendorStockViewContext, db: DbSession) -> list[dict[str, object]]:
     try:
@@ -242,9 +337,15 @@ def vendor_warehouses(
 ) -> list[dict[str, object]]:
     if not context.user.company_id:
         raise service_error_to_http(ServiceError(403, "A company-scoped user is required."))
+    shop_services.vendor_shop_warehouse(db, context.user.company_id, _vendor_id(db, context))
     rows = db.scalars(
         select(Warehouse)
-        .where(Warehouse.company_id == context.user.company_id, Warehouse.is_active.is_(True))
+        .where(
+            Warehouse.company_id == context.user.company_id,
+            Warehouse.vendor_id == _vendor_id(db, context),
+            Warehouse.warehouse_type == "vendor_shop",
+            Warehouse.is_active.is_(True),
+        )
         .order_by(Warehouse.code)
     ).all()
     return [{"id": row.id, "code": row.code, "name": row.name} for row in rows]

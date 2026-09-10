@@ -4,10 +4,6 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        source: '/register',
-        destination: 'http://127.0.0.1:8000/register',
-      },
-      {
         source: '/register/success',
         destination: 'http://127.0.0.1:8000/register/success',
       },

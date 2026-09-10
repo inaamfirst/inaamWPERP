@@ -9,11 +9,18 @@ import {
 } from "react";
 import { fetchApi } from "@/lib/api";
 import styles from "@/components/commerce.module.css";
-import { RoleEditor, RoleList, UserEditor, UserList } from "./IdentityPanels";
+import {
+  PendingRegistrationList,
+  RoleEditor,
+  RoleList,
+  UserEditor,
+  UserList,
+} from "./IdentityPanels";
 import identityStyles from "./identity.module.css";
 import {
   type AccountStatus,
   type Permission,
+  type PendingRegistration,
   type Role,
   type RoleForm,
   type User,
@@ -73,6 +80,10 @@ export default function AdminIdentity() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>([]);
+  const [pendingRoleIds, setPendingRoleIds] = useState<Record<string, string[]>>({});
+  const [pendingLoading, setPendingLoading] = useState(true);
+  const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -92,19 +103,47 @@ export default function AdminIdentity() {
     setUsers((await fetchApi("/identity/users")) as User[]);
   }
 
+  async function refreshPending() {
+    setPendingLoading(true);
+    try {
+      const nextPending = (await fetchApi("/identity/registrations/pending")) as PendingRegistration[];
+      setPendingRegistrations(nextPending);
+      setPendingRoleIds((current) => {
+        const next: Record<string, string[]> = {};
+        for (const registration of nextPending) {
+          next[registration.id] = current[registration.id] || registration.role_ids;
+        }
+        return next;
+      });
+    } catch (caught) {
+      setError(errorMessage(caught, "Pending registrations could not be loaded."));
+    } finally {
+      setPendingLoading(false);
+    }
+  }
+
   useEffect(() => {
     Promise.all([
       fetchApi("/identity/users").catch(() => []),
       fetchApi("/identity/roles").catch(() => []),
       fetchApi("/identity/permissions").catch(() => []),
+      fetchApi("/identity/registrations/pending").catch(() => []),
     ])
-      .then(([nextUsers, nextRoles, nextPermissions]) => {
+      .then(([nextUsers, nextRoles, nextPermissions, nextPending]) => {
         setUsers(nextUsers as User[]);
         setRoles(nextRoles as Role[]);
         setPermissions(nextPermissions as Permission[]);
+        const registrations = nextPending as PendingRegistration[];
+        setPendingRegistrations(registrations);
+        setPendingRoleIds(
+          Object.fromEntries(registrations.map((registration) => [registration.id, registration.role_ids])),
+        );
       })
       .catch(() => setError("Data could not be loaded."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setPendingLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -258,6 +297,50 @@ export default function AdminIdentity() {
     }
   }
 
+  function togglePendingRole(registration: PendingRegistration, roleId: string) {
+    setPendingRoleIds((current) => {
+      const selected = current[registration.id] || [];
+      return {
+        ...current,
+        [registration.id]: selected.includes(roleId)
+          ? selected.filter((id) => id !== roleId)
+          : [...selected, roleId],
+      };
+    });
+  }
+
+  async function approvePending(registration: PendingRegistration) {
+    setError("");
+    setPendingActionId(registration.id);
+    try {
+      await fetchApi(`/identity/registrations/${registration.id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ role_ids: pendingRoleIds[registration.id] || [] }),
+      });
+      await Promise.all([refreshUsers(), refreshPending()]);
+    } catch (caught) {
+      setError(errorMessage(caught, "Registration could not be approved."));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
+
+  async function rejectPending(registration: PendingRegistration) {
+    setError("");
+    setPendingActionId(registration.id);
+    try {
+      await fetchApi(`/identity/registrations/${registration.id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Rejected by administrator." }),
+      });
+      await Promise.all([refreshUsers(), refreshPending()]);
+    } catch (caught) {
+      setError(errorMessage(caught, "Registration could not be rejected."));
+    } finally {
+      setPendingActionId(null);
+    }
+  }
+
   function toggleRole(roleId: string) {
     setUserForm((current) => ({
       ...current,
@@ -388,14 +471,26 @@ export default function AdminIdentity() {
             onCancel={closeUserForm}
           />
         ) : (
-          <UserList
-            users={users}
-            loading={loading}
-            onEdit={(user) => void beginEdit(user)}
-            onChangeStatus={(user, status) =>
-              void changeUserStatus(user, status)
-            }
-          />
+          <>
+            <PendingRegistrationList
+              registrations={pendingRegistrations}
+              roles={roles}
+              selectedRoleIds={pendingRoleIds}
+              loading={pendingLoading}
+              actionId={pendingActionId}
+              onToggleRole={togglePendingRole}
+              onApprove={(registration) => void approvePending(registration)}
+              onReject={(registration) => void rejectPending(registration)}
+            />
+            <UserList
+              users={users}
+              loading={loading}
+              onEdit={(user) => void beginEdit(user)}
+              onChangeStatus={(user, status) =>
+                void changeUserStatus(user, status)
+              }
+            />
+          </>
         ))}
       {activeTab === "roles" &&
         (showRoleForm ? (

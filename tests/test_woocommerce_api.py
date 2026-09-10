@@ -30,6 +30,7 @@ from erp.packages.core.db.models import (
     Company,
     ExternalResourceMap,
     Product,
+    ProductChannelListing,
     ProductCategoryLink,
     ProductImage,
     ProductVariant,
@@ -55,6 +56,7 @@ from erp.packages.core.woocommerce_services import (
     enqueue_product_video_sync,
     enqueue_products_for_sync,
     enqueue_sync_outbox,
+    enqueue_woocommerce_sync_run,
     ensure_remote_brand,
     ensure_remote_category,
     get_external_resource_map,
@@ -826,6 +828,11 @@ def test_vendor_product_outbox_enqueue_is_scoped_to_vendor(harness: ApiHarness) 
         db.add_all([vendor, owned, other])
         db.flush()
         owned.vendor_id = vendor.id
+        db.add(ProductChannelListing(
+            company_id=company_id, product_id=owned.id, vendor_id=vendor.id,
+            channel="woocommerce", listing_status="published", sync_status="pending",
+        ))
+        db.flush()
 
         assert enqueue_products_for_sync(db, company_id, vendor_id=vendor.id) == 1
         queued_ids = set(
@@ -3135,3 +3142,75 @@ def test_woocommerce_failed_sync_run_is_persisted_and_visible(
     runs_resp = client.get("/api/v1/woocommerce/sync-runs", headers=headers)
     assert runs_resp.status_code == 200
     assert any(run["status"] == "failed" for run in runs_resp.json())
+
+
+def test_company_wide_active_sync_key_coalesces_vendor_requests(harness: ApiHarness) -> None:
+    _token, company_id = complete_first_use_setup(harness.client)
+    with harness.session_factory() as db:
+        company_run, created = enqueue_woocommerce_sync_run(
+            db, company_id=company_id, sync_mode="products"
+        )
+        vendor_run, vendor_created = enqueue_woocommerce_sync_run(
+            db,
+            company_id=company_id,
+            sync_mode="products",
+            vendor_id="vendor-a",
+        )
+
+        assert created is True
+        assert vendor_created is False
+        assert vendor_run.id == company_run.id
+        assert company_run.active_key == f"woocommerce:{company_id}"
+
+
+def test_rate_limited_outbox_run_is_deferred_without_losing_work(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = harness.client
+    token, company_id = complete_first_use_setup(client)
+    headers = bearer(token)
+    configure_store(client, headers)
+    with harness.session_factory() as db:
+        category = Category(
+            company_id=company_id,
+            name="Rate limited category",
+            slug="rate-limited-category",
+            is_active=True,
+        )
+        db.add(category)
+        db.flush()
+        product = Product(
+            company_id=company_id,
+            category_id=category.id,
+            name="Rate limited product",
+            slug="rate-limited-product",
+            sku="RATE-LIMIT-1",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        enqueue_product_sync(db, company_id=company_id, product=product)
+        db.commit()
+
+    def rate_limited_request(method: str, url: str, **_kwargs: object) -> httpx.Response:
+        assert method == "GET"
+        assert woocommerce_resource_path(url) == "/products/categories"
+        return httpx.Response(429, headers={"Retry-After": "120"}, text="Too Many Requests")
+
+    monkeypatch.setattr(httpx, "request", rate_limited_request)
+    state = worker_run_once(session_factory=harness.session_factory)
+
+    with harness.session_factory() as db:
+        run = db.scalar(select(SyncRunLog).where(SyncRunLog.company_id == company_id))
+        outbox = db.scalar(select(SyncOutbox).where(SyncOutbox.company_id == company_id))
+        assert run is not None
+        assert state["status"] == "queued", run.error
+        assert run.status == "queued"
+        assert run.next_attempt_at is not None
+        assert run.active_key == f"woocommerce:{company_id}"
+        assert run.stats["rate_limited"] is True
+        assert outbox is not None
+        assert outbox.status == "pending"

@@ -64,6 +64,7 @@ const roleLinks: Record<QuickLinksMode, QuickLink[]> = {
     { label: "Manage stock", href: "/vendor/stock", permission: "vendor.stock.view" },
     { label: "View orders", href: "/vendor/orders", permission: "vendor.orders.view" },
     { label: "View ledger", href: "/vendor/ledger", permission: "vendor.ledger.view" },
+    { label: "Purchases & cash", href: "/vendor/shop", permission: "vendor.shop.purchases.manage" },
     { label: "View reports", href: "/vendor/reports", permission: "vendor.reports.view" },
     { label: "Get support", href: "/vendor/support", permission: "vendor.profile.view" },
   ],

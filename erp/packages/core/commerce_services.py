@@ -16,6 +16,7 @@ from erp.packages.core.db.models import (
     SupportContact,
     VendorOrderItem,
     Warehouse,
+    ShopFinanceEntry,
 )
 from erp.packages.core.inventory_services import current_stock, get_warehouse, record_stock_movement
 from erp.packages.core.order_services import create_order, order_items, record_payment
@@ -97,6 +98,15 @@ def upsert_channel_listing(
     listing.price_minor = payload.price_minor
     listing.sync_status = "pending" if payload.listing_status == "published" else "not_required"
     db.flush()
+    # Listing changes are explicit online-publication actions. Queue both publish
+    # and unpublish updates so an already mapped remote product is hidden.
+    from erp.packages.core.woocommerce_services import enqueue_product_sync
+
+    try:
+        enqueue_product_sync(db, company_id=scoped, product=product)
+    except ServiceError as exc:
+        if exc.status_code != 404 or exc.message != "WooCommerce is not configured.":
+            raise
     record_audit(
         db,
         action="commerce.product_channel_listing_updated",
@@ -363,6 +373,11 @@ def create_pos_sale(
     if not warehouse.is_active:
         raise ServiceError(409, "Cannot sell from an inactive warehouse.")
     if vendor_id:
+        from erp.packages.core.shop_services import vendor_shop_warehouse
+
+        shop_warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+        if warehouse.id != shop_warehouse.id:
+            raise ServiceError(403, "POS sales must use this vendor's shop warehouse.")
         allowed = _vendor_product_ids(db, scoped, vendor_id)
         if any(item.product_id not in allowed for item in payload.items):
             raise ServiceError(403, "POS sale contains a product outside the vendor scope.")
@@ -433,6 +448,12 @@ def create_pos_sale(
         )
     for payment in payload.payments:
         record_payment(db, company_id=scoped, user_id=user_id, order_id=order.id, payload=payment)
+    if vendor_id:
+        db.add(ShopFinanceEntry(
+            company_id=scoped, vendor_id=vendor_id, entry_type="pos_sale", direction="in",
+            amount_minor=order.total_minor, currency=order.currency, source_type="order", source_id=order.id,
+            memo="POS sale receipt.",
+        ))
     record_audit(
         db,
         action="commerce.pos_sale_completed",

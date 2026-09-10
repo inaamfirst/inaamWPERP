@@ -42,7 +42,7 @@ export default function LoginPage() {
       if (err instanceof ApiError && err.status === 429) {
         setError("Too many sign-in attempts. Please try again later.");
       } else if (normalized.includes("pending")) {
-        setError("Your vendor account is awaiting administrator approval.");
+        setError("Your account is awaiting administrator approval.");
       } else if (
         normalized.includes("paused") ||
         normalized.includes("stopped") ||
@@ -109,7 +109,7 @@ export default function LoginPage() {
 
         <div className={styles.links}>
           <Link href="/forgot-password">Forgot password?</Link>
-          <Link href="/register">Register as a vendor</Link>
+          <Link href="/register">Request an account</Link>
         </div>
       </section>
     </main>

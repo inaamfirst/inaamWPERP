@@ -25,6 +25,31 @@ application/database secrets and invalidates existing sessions.
 The URL is `https://159-65-129-218.nip.io`. This hostname resolves to the
 Droplet IP through nip.io and is intended for staging only.
 
+## Update an existing staging Droplet
+
+After a release is pushed, update the existing installation from the
+DigitalOcean Web Console. These commands preserve `/etc/inaam-erp/staging.env`
+and the PostgreSQL data; they do not run the fresh-install setup script:
+
+```bash
+cd /opt/inaam-erp
+git fetch origin main
+git checkout --detach origin/main
+chown -R erp:erp /opt/inaam-erp
+runuser -u erp -- bash -lc 'cd /opt/inaam-erp/frontend && npm ci && npm run build'
+set -a
+. /etc/inaam-erp/staging.env
+set +a
+/opt/inaam-erp/.venv/bin/alembic upgrade head
+systemctl restart inaam-erp-api inaam-erp-frontend inaam-erp-worker
+systemctl is-active inaam-erp-api inaam-erp-frontend inaam-erp-worker nginx
+curl -fsS https://erp.choiceoye.com/api/v1/health
+```
+
+Take or verify a DigitalOcean snapshot before updating, and keep the previous
+commit available for rollback. Do not replace the environment file or rerun
+`setup_staging.sh` for an application-only update.
+
 ## First administrator
 
 After the script completes, read the token only inside the Web Console:
@@ -39,8 +64,9 @@ source control. The endpoint can only complete once.
 
 ## Recover a staging login
 
-Do not source `staging.env` in a shell: it is a systemd environment file and
-contains JSON values. If a staging administrator cannot sign in, download the
+Do not print or commit `staging.env`; it contains application and database
+secrets. For a migration CLI, load it only in the current shell immediately
+before running Alembic (as shown above). If a staging administrator cannot sign in, download the
 recovery helper and enter the password only at its hidden terminal prompt:
 
 ```bash

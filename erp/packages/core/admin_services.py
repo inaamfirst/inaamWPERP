@@ -208,6 +208,162 @@ def get_primary_vendor_for_user(
     return vendor
 
 
+def _registration_vendor_for_user(
+    db: Session,
+    *,
+    company_id: str | None,
+    user_id: str,
+) -> Vendor | None:
+    """Resolve the single vendor profile that identifies a vendor request."""
+
+    links = list(
+        db.scalars(
+            select(VendorUser).where(
+                VendorUser.company_id == company_id,
+                VendorUser.user_id == user_id,
+                func.lower(VendorUser.role_name) == "vendor",
+            )
+        ).all()
+    )
+    if not links:
+        return None
+    primary_links = [link for link in links if link.is_primary]
+    if len(primary_links) == 1:
+        link = primary_links[0]
+    elif len(links) == 1:
+        link = links[0]
+    else:
+        raise ServiceError(409, "Vendor account relationship is ambiguous.")
+    vendor = db.scalar(
+        select(Vendor).where(Vendor.company_id == company_id, Vendor.id == link.vendor_id)
+    )
+    if vendor is None:
+        raise ServiceError(404, "Linked vendor profile not found.")
+    return vendor
+
+
+def list_pending_registrations(db: Session, company_id: str | None) -> list[User]:
+    return list(
+        db.scalars(
+            select(User)
+            .where(User.company_id == company_id, User.account_status == "pending")
+            .order_by(User.created_at, User.username)
+        ).all()
+    )
+
+
+def approve_registration(
+    db: Session,
+    *,
+    company_id: str | None,
+    actor_user_id: str,
+    user_id: str,
+    role_ids: list[str],
+) -> User:
+    """Approve one pending public request and assign its final access roles."""
+
+    user = get_user(db, company_id, user_id)
+    if user.account_status != "pending":
+        raise ServiceError(409, "Registration is no longer pending.")
+
+    vendor = _registration_vendor_for_user(db, company_id=company_id, user_id=user.id)
+    selected_role_ids = list(dict.fromkeys(role_ids))
+    if vendor is not None:
+        from erp.packages.core.vendor_auth_services import ensure_vendor_role
+
+        vendor_role = ensure_vendor_role(db, user.company_id)
+        if vendor_role.id not in selected_role_ids:
+            selected_role_ids.insert(0, vendor_role.id)
+    elif not selected_role_ids:
+        raise ServiceError(422, "Select at least one role before approving a staff registration.")
+
+    set_user_roles(db, user, selected_role_ids)
+    previous_vendor_status = vendor.status if vendor is not None else None
+    if vendor is not None:
+        vendor.status = "active"
+    user.account_status = "active"
+    user.is_active = True
+    db.flush()
+    record_audit(
+        db,
+        action="identity.registration_approved",
+        company_id=company_id,
+        user_id=actor_user_id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={
+            "account_type": "vendor" if vendor is not None else "staff",
+            "role_count": len(selected_role_ids),
+            "vendor_id": vendor.id if vendor is not None else None,
+        },
+    )
+    if vendor is not None:
+        record_audit(
+            db,
+            action="marketplace.vendor_approved",
+            company_id=company_id,
+            user_id=actor_user_id,
+            entity_type="vendor",
+            entity_id=vendor.id,
+            metadata={
+                "previous_status": previous_vendor_status,
+                "status": "active",
+                "source": "identity_registration_queue",
+            },
+        )
+    db.flush()
+    return user
+
+
+def reject_registration(
+    db: Session,
+    *,
+    company_id: str | None,
+    actor_user_id: str,
+    user_id: str,
+    reason: str | None = None,
+) -> User:
+    user = get_user(db, company_id, user_id)
+    if user.account_status != "pending":
+        raise ServiceError(409, "Registration is no longer pending.")
+    vendor = _registration_vendor_for_user(db, company_id=company_id, user_id=user.id)
+    user.account_status = "stopped"
+    user.is_active = False
+    revoke_user_sessions(db, user.id)
+    if vendor is not None:
+        vendor.status = "stopped"
+    db.flush()
+    record_audit(
+        db,
+        action="identity.registration_rejected",
+        company_id=company_id,
+        user_id=actor_user_id,
+        entity_type="user",
+        entity_id=user.id,
+        metadata={
+            "account_type": "vendor" if vendor is not None else "staff",
+            "vendor_id": vendor.id if vendor is not None else None,
+            "reason": reason,
+        },
+    )
+    if vendor is not None:
+        record_audit(
+            db,
+            action="marketplace.vendor_rejected",
+            company_id=company_id,
+            user_id=actor_user_id,
+            entity_type="vendor",
+            entity_id=vendor.id,
+            metadata={
+                "status": "stopped",
+                "source": "identity_registration_queue",
+                "reason": reason,
+            },
+        )
+    db.flush()
+    return user
+
+
 def create_user(
     db: Session,
     *,

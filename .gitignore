@@ -14,3 +14,11 @@ $tmp/
 *.db
 *.sqlite3
 .env
+
+# Local and production state. It may contain customer data or credentials.
+runtime_data/
+.pytest_cache/
+.ruff_cache/
+
+# Per-PC deployment settings are deliberately never committed.
+scripts/deploy-production.local.psd1

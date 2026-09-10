@@ -1,4 +1,4 @@
-ï»¿"use client";
+"use client";
 
 import {
   useEffect,
@@ -290,7 +290,7 @@ const emptyForm: ProductForm = {
 function money(minor: number | null | undefined) {
   return typeof minor === "number" && Number.isFinite(minor)
     ? `PKR ${(minor / 100).toFixed(2)}`
-    : "â€”";
+    : "—";
 }
 
 function listValue(values: string[] | undefined) {
@@ -512,6 +512,7 @@ export default function VendorProducts() {
   const { permissions } = useAuth();
   const canManage = permissions.includes("vendor.products.manage");
   const [products, setProducts] = useState<Product[]>([]);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [categories, setCategories] = useState<Reference[]>([]);
   const [brands, setBrands] = useState<Reference[]>([]);
@@ -706,6 +707,24 @@ export default function VendorProducts() {
     }
   }
 
+  async function setOnlinePublication(listing_status: "published" | "private") {
+    if (!canManage || !selectedId) return;
+    setSaving(true);
+    setError("");
+    try {
+      await fetchApi(`/commerce/vendor/products/${selectedId}/channel`, {
+        method: "PUT",
+        body: JSON.stringify({ channel: "woocommerce", listing_status }),
+      });
+      setMessage(listing_status === "published" ? "Product published to the online store." : "Product removed from the online store. It remains available in your Shop / POS.");
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? String(caught.data.detail || caught.message) : "Publication status could not be updated.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function deletePermanently() {
     if (!canManage || !selectedId || form.status !== "archived") return;
     setSaving(true);
@@ -810,6 +829,33 @@ export default function VendorProducts() {
     }
   }
 
+  async function publishSelected(published: boolean) {
+    if (!canManage || selectedProductIds.length === 0) return;
+    setSaving(true);
+    setError("");
+    try {
+      await fetchApi("/commerce/vendor/products/channels/bulk", {
+        method: "PUT",
+        body: JSON.stringify({
+          product_ids: selectedProductIds,
+          listing_status: published ? "published" : "private",
+        }),
+      });
+      setMessage(`${selectedProductIds.length} product(s) ${published ? "published" : "kept private"}.`);
+      setSelectedProductIds([]);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? String(caught.data.detail || caught.message) : "Bulk publication could not be updated.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleProductSelection(productId: string) {
+    setSelectedProductIds((current) => current.includes(productId)
+      ? current.filter((id) => id !== productId)
+      : [...current, productId]);
+  }
   async function publish(product: Product, published: boolean) {
     if (!canManage) return;
     setError("");
@@ -874,22 +920,22 @@ export default function VendorProducts() {
                 loaded.
               </p>
             </div>
-            <button
-              type="button"
-              className={styles.secondaryButton}
-              onClick={() => void load()}
-            >
-              Refresh
-            </button>
+            <div className={styles.toolbarActions}>
+              {canManage && selectedProductIds.length > 0 && <>
+                <button type="button" className={styles.primaryButton} disabled={saving} onClick={() => void publishSelected(true)}>Publish selected</button>
+                <button type="button" className={styles.secondaryButton} disabled={saving} onClick={() => void publishSelected(false)}>Keep selected private</button>
+              </>}
+              <button type="button" className={styles.secondaryButton} onClick={() => void load()}>Refresh</button>
+            </div>
           </div>
           {loading ? (
-            <div className={styles.empty}>Loading productsâ€¦</div>
+            <div className={styles.empty}>Loading products…</div>
           ) : (
             <div className={styles.tableWrap}>
               <table className={`${styles.table} ${styles.mobileCardTable}`}>
                 <thead>
                   <tr>
-                    <th>Name</th>
+                    {canManage && <th>Select</th>}<th>Name</th>
                     <th>SKU</th>
                     <th>Price</th>
                     <th>Status</th>
@@ -903,14 +949,14 @@ export default function VendorProducts() {
                     const published = listing?.listing_status === "published";
                     return (
                       <tr key={product.id}>
-                        <td data-label="Name">
+                        {canManage && <td data-label="Select"><input type="checkbox" aria-label={`Select ${product.name}`} checked={selectedProductIds.includes(product.id)} onChange={() => toggleProductSelection(product.id)} /></td>}<td data-label="Name">
                           <strong>{product.name}</strong>
                           <br />
                           <span className={styles.muted}>
                             {product.product_type || "simple"}
                           </span>
                         </td>
-                        <td data-label="SKU">{product.sku || "â€”"}</td>
+                        <td data-label="SKU">{product.sku || "—"}</td>
                         <td data-label="Price">
                           {money(product.regular_price_minor)}
                         </td>
@@ -959,7 +1005,7 @@ export default function VendorProducts() {
                   })}
                   {products.length === 0 && (
                     <tr>
-                      <td colSpan={canManage ? 6 : 5} className={styles.empty}>
+                      <td colSpan={canManage ? 7 : 5} className={styles.empty}>
                         No vendor products found.
                       </td>
                     </tr>
@@ -1954,7 +2000,7 @@ export default function VendorProducts() {
                   className={styles.primaryButton}
                   disabled={saving}
                 >
-                  {saving ? "Savingâ€¦" : "Save product"}
+                  {saving ? "Saving…" : "Save product"}
                 </button>
                 {selectedId && (
                   <>
@@ -1986,6 +2032,16 @@ export default function VendorProducts() {
                     >
                       Publish product
                     </button>
+                    {listingByProduct.get(selectedId)?.listing_status === "published" && (
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        disabled={saving}
+                        onClick={() => void setOnlinePublication("private")}
+                      >
+                        Remove from online store
+                      </button>
+                    )}
                     {form.status === "archived" && (
                       <button
                         type="button"
@@ -2007,7 +2063,7 @@ export default function VendorProducts() {
         Available product references for relationships:{" "}
         {productOptions
           .map((product) => `${product.name} (${product.id})`)
-          .join(" Â· ") || "none"}
+          .join(" · ") || "none"}
       </div>
       <ConfirmDialog
         open={confirmDelete}

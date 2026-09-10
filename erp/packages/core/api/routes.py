@@ -17,13 +17,16 @@ from sqlalchemy.orm import Session
 
 from erp import __version__
 from erp.packages.core.admin_services import (
+    approve_registration,
     create_company,
     create_role,
     create_user,
     get_primary_vendor_for_user,
     get_user,
     list_companies,
+    list_pending_registrations,
     list_users,
+    reject_registration,
     reset_user_password,
     update_company,
     update_role,
@@ -206,6 +209,7 @@ from erp.packages.core.schemas import (
     PasswordResetRequest,
     PaymentCreate,
     PaymentOut,
+    PendingRegistrationOut,
     PermissionOut,
     ProductCodeSuggestionOut,
     ProductCreate,
@@ -215,6 +219,8 @@ from erp.packages.core.schemas import (
     ProductVariantOut,
     ProductVideoOut,
     RefreshRequest,
+    RegistrationApprovalRequest,
+    RegistrationRejectionRequest,
     RegistrationResponse,
     RestorePlanOut,
     RestorePlanRequest,
@@ -234,6 +240,8 @@ from erp.packages.core.schemas import (
     UserCreate,
     UserOut,
     UserPasswordReset,
+    UserRegistrationRequest,
+    UserRegistrationResponse,
     UserUpdate,
     VendorProfileOut,
     VendorRegistrationRequest,
@@ -277,6 +285,7 @@ from erp.packages.core.services import (
 )
 from erp.packages.core.vendor_auth_services import (
     find_password_reset_user,
+    register_public_user,
     register_public_vendor,
 )
 from erp.packages.core.whatsapp_services import (
@@ -599,6 +608,14 @@ def admin_user_detail_out(user: User, db: Session) -> AdminUserDetailOut:
         else None
     )
     return AdminUserDetailOut(**base.model_dump(), vendor_profile=vendor_profile)
+
+
+def pending_registration_out(user: User, db: Session) -> PendingRegistrationOut:
+    detail = admin_user_detail_out(user, db)
+    return PendingRegistrationOut(
+        **detail.model_dump(),
+        registration_type="vendor" if detail.vendor_profile is not None else "staff",
+    )
 
 
 def auth_response(issued: IssuedSession) -> AuthResponse:
@@ -1259,6 +1276,7 @@ def sync_run_log_out(run_log: SyncRunLog) -> SyncRunLogOut:
         attempts=run_log.attempts,
         worker_id=run_log.worker_id,
         lease_expires_at=run_log.lease_expires_at,
+        next_attempt_at=run_log.next_attempt_at,
     )
 
 
@@ -1554,8 +1572,50 @@ def public_vendor_registration(
         db.rollback()
         record_auth_throttle_attempt(db, scope_keys)
         db.commit()
-        error = ServiceError(409, "Registration could not be completed.")
+        error = ServiceError(409, "The supplied login details are already in use.")
         raise service_error_to_http(error) from exc
+
+
+@router.post(
+    "/auth/register/user",
+    response_model=UserRegistrationResponse,
+    status_code=201,
+    tags=["identity"],
+)
+def public_user_registration(
+    payload: UserRegistrationRequest,
+    request: Request,
+    db: DbSession,
+) -> UserRegistrationResponse:
+    scope_keys = auth_throttle_scope_keys(
+        action="user_registration",
+        account_identifier=payload.username,
+        workspace=payload.workspace_slug,
+        ip_address=request.client.host if request.client else None,
+    )
+    try:
+        check_auth_throttle(db, scope_keys)
+        created = register_public_user(db, payload)
+        record_auth_throttle_attempt(db, scope_keys)
+        db.commit()
+        return UserRegistrationResponse(
+            user_id=created.user.id,
+            account_status=created.user.account_status,
+            message="Registration received. An administrator must approve the staff account.",
+        )
+    except ServiceError as exc:
+        db.rollback()
+        if exc.status_code != 429:
+            record_auth_throttle_attempt(db, scope_keys)
+            db.commit()
+        raise service_error_to_http(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        record_auth_throttle_attempt(db, scope_keys)
+        db.commit()
+        raise service_error_to_http(
+            ServiceError(409, "The supplied login details are already in use.")
+        ) from exc
 
 
 @router.get("/identity/permissions", response_model=list[PermissionOut], tags=["identity"])
@@ -1629,6 +1689,73 @@ def identity_users(
     db: DbSession,
 ) -> list[UserOut]:
     return [user_out(user, db) for user in list_users(db, context.user.company_id)]
+
+
+@router.get(
+    "/identity/registrations/pending",
+    response_model=list[PendingRegistrationOut],
+    tags=["identity"],
+)
+def identity_pending_registrations(
+    context: UsersViewContext,
+    db: DbSession,
+) -> list[PendingRegistrationOut]:
+    return [
+        pending_registration_out(user, db)
+        for user in list_pending_registrations(db, context.user.company_id)
+    ]
+
+
+@router.post(
+    "/identity/registrations/{user_id}/approve",
+    response_model=PendingRegistrationOut,
+    tags=["identity"],
+)
+def identity_registration_approve(
+    user_id: str,
+    context: UsersManageContext,
+    db: DbSession,
+    payload: RegistrationApprovalRequest | None = None,
+) -> PendingRegistrationOut:
+    try:
+        user = approve_registration(
+            db,
+            company_id=context.user.company_id,
+            actor_user_id=context.user.id,
+            user_id=user_id,
+            role_ids=payload.role_ids if payload is not None else [],
+        )
+        db.commit()
+        return pending_registration_out(user, db)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.post(
+    "/identity/registrations/{user_id}/reject",
+    response_model=PendingRegistrationOut,
+    tags=["identity"],
+)
+def identity_registration_reject(
+    user_id: str,
+    context: UsersManageContext,
+    db: DbSession,
+    payload: RegistrationRejectionRequest | None = None,
+) -> PendingRegistrationOut:
+    try:
+        user = reject_registration(
+            db,
+            company_id=context.user.company_id,
+            actor_user_id=context.user.id,
+            user_id=user_id,
+            reason=payload.reason if payload is not None else None,
+        )
+        db.commit()
+        return pending_registration_out(user, db)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
 
 
 @router.get(
@@ -2776,14 +2903,16 @@ def woocommerce_sync_trigger(
     mode: str = "incremental",
 ) -> SyncRunLogOut:
     try:
-        vendor_id = None
         if "woocommerce.sync" not in context.permissions:
-            vendor_id = vendor_for_user(db, context.user.company_id, context.user.id).id
+            raise ServiceError(
+                403,
+                "WooCommerce publishing is automatic for vendor users. Save your product changes "
+                "and the shared queue will publish them safely.",
+            )
         run_log, _created = enqueue_woocommerce_sync_run(
             db,
             company_id=context.user.company_id,
             sync_mode=mode,
-            vendor_id=vendor_id,
         )
         db.commit()
         return sync_run_log_out(run_log)

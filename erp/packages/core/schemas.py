@@ -1915,6 +1915,7 @@ class SyncRunLogOut(BaseModel):
     attempts: int = 0
     worker_id: str | None = None
     lease_expires_at: datetime | None = None
+    next_attempt_at: datetime | None = None
 
 
 class SyncConflictOut(BaseModel):
@@ -2229,3 +2230,36 @@ class ReconciliationIssueOut(BaseModel):
     expected_minor: int | None = None
     actual_minor: int | None = None
     detail: str
+
+class ShopSupplierCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=255)
+    contact_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=80)
+    address: str | None = Field(default=None, max_length=5000)
+    is_active: bool = True
+
+
+class ShopPurchaseLineCreate(BaseModel):
+    product_id: str
+    variant_id: str | None = None
+    quantity: int = Field(gt=0)
+    unit_cost_minor: int = Field(ge=0)
+
+
+class ShopPurchaseCreate(BaseModel):
+    supplier_id: str
+    items: list[ShopPurchaseLineCreate] = Field(min_length=1, max_length=200)
+    payment_minor: int = Field(default=0, ge=0)
+    currency: str = Field(default="PKR", min_length=3, max_length=3)
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+class ShopPublicationBulkUpdate(BaseModel):
+    product_ids: list[str] = Field(min_length=1, max_length=500)
+    listing_status: Literal["private", "draft", "published", "paused"]
+
+
+class ShopPurchasePaymentCreate(BaseModel):
+    amount_minor: int = Field(gt=0)
+    memo: str | None = Field(default=None, max_length=5000)

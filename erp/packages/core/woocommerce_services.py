@@ -4,10 +4,13 @@ import hashlib
 import json as jsonlib
 import logging
 import mimetypes
+import random
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -30,6 +33,7 @@ from erp.packages.core.db.models import (
     ExternalResourceMap,
     Order,
     Product,
+    ProductChannelListing,
     ProductCategoryLink,
     ProductImage,
     ProductVariant,
@@ -55,7 +59,13 @@ WOOCOMMERCE_VIDEO_META_KEY = "choiceoye_erp_product_videos"
 WOOCOMMERCE_VIDEO_SCHEMA_VERSION = 1
 CONNECTOR = "woocommerce"
 WOOCOMMERCE_REST_MODES = ("pretty", "query")
-WOOCOMMERCE_SYNC_MODES = ("incremental", "products", "full_products", "reconcile_products")
+WOOCOMMERCE_SYNC_MODES = (
+    "incremental",
+    "products",
+    "full_products",
+    "reconcile_products",
+    "outbox",
+)
 WOOCOMMERCE_LAST_SYNC_KEYS = {
     "product": "last_products_sync",
     "order": "last_orders_sync",
@@ -79,7 +89,15 @@ SYNC_OUTBOX_STALE_SECONDS = 15 * 60
 SYNC_PULL_PROGRESS_BATCH_SIZE = 50
 REMOTE_RETRY_ATTEMPTS = 3
 REMOTE_RETRY_MAX_SECONDS = 10.0
+REMOTE_REQUEST_INTERVAL_SECONDS = 1.0
+RATE_LIMIT_DEFAULT_DELAY_SECONDS = 60.0
+RATE_LIMIT_MAX_DELAY_SECONDS = 15 * 60.0
+RATE_LIMIT_MAX_RUN_ATTEMPTS = 8
+SYNC_OUTBOX_MAX_ATTEMPTS = 8
 WOOCOMMERCE_TIMESTAMP_OVERLAP = timedelta(seconds=1)
+
+_REMOTE_REQUEST_PACING_LOCK = threading.Lock()
+_REMOTE_REQUEST_NEXT_ALLOWED_AT: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -125,6 +143,17 @@ class WooCommerceRequestResult:
     auth_mode: str
     resource_path: str
     url: str
+
+
+class WooCommerceRateLimitError(ServiceError):
+    """A remote 429 that must defer the durable sync run instead of failing it."""
+
+    def __init__(self, result: WooCommerceRequestResult, retry_after_seconds: float) -> None:
+        super().__init__(
+            429,
+            format_remote_http_error(action="WooCommerce rate limit", result=result),
+        )
+        self.retry_after_seconds = retry_after_seconds
 
 
 def woocommerce_sync_user_id(db: Session, company_id: str) -> str | None:
@@ -342,6 +371,45 @@ def _retry_delay_seconds(response: httpx.Response | None, retry_number: int) -> 
     return min(float(2**retry_number), REMOTE_RETRY_MAX_SECONDS)
 
 
+def _rate_limit_delay_seconds(response: httpx.Response) -> float:
+    """Return a bounded delay from Retry-After seconds or an HTTP date."""
+
+    value = response.headers.get("Retry-After")
+    if value:
+        try:
+            return min(max(float(value), 0.0), RATE_LIMIT_MAX_DELAY_SECONDS)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                return min(
+                    max((retry_at - utcnow()).total_seconds(), 0.0),
+                    RATE_LIMIT_MAX_DELAY_SECONDS,
+                )
+            except (TypeError, ValueError, IndexError, OverflowError):
+                pass
+    return RATE_LIMIT_DEFAULT_DELAY_SECONDS
+
+
+def _pace_remote_request(url: str) -> None:
+    """Serialize requests per remote origin at the production-safe one-per-second rate."""
+
+    # Unit/local development runs use mocked connectors and do not represent a
+    # shared live store. The managed worker is mandatory in production and is
+    # the only process that needs this production safety gate.
+    if not getattr(get_settings(), "worker_loop", False):
+        return
+    origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}".lower()
+    with _REMOTE_REQUEST_PACING_LOCK:
+        now = time.monotonic()
+        next_allowed = _REMOTE_REQUEST_NEXT_ALLOWED_AT.get(origin, now)
+        delay = max(0.0, next_allowed - now)
+        if delay:
+            time.sleep(delay)
+        _REMOTE_REQUEST_NEXT_ALLOWED_AT[origin] = time.monotonic() + REMOTE_REQUEST_INTERVAL_SECONDS
+
+
 def _remote_request_with_retry(
     method: str,
     url: str,
@@ -357,11 +425,16 @@ def _remote_request_with_retry(
     last_request_error: httpx.RequestError | None = None
     for attempt in range(REMOTE_RETRY_ATTEMPTS):
         try:
+            _pace_remote_request(url)
             response = httpx.request(method, url, **kwargs)
         except httpx.RequestError as exc:
             last_request_error = exc
             response = None
-        if response is not None and response.status_code not in {429, 502, 503, 504}:
+        # Retrying a rate limit immediately only worsens the remote block. The
+        # durable run scheduler receives the 429 and defers it instead.
+        if response is not None and response.status_code == 429:
+            return response
+        if response is not None and response.status_code not in {502, 503, 504}:
             return response
         if attempt + 1 >= REMOTE_RETRY_ATTEMPTS:
             if response is not None:
@@ -1679,6 +1752,7 @@ def sync_local_taxonomies_for_sync(
     company_id: str,
     *,
     vendor_id: str | None = None,
+    product_ids: set[str] | None = None,
 ) -> dict[str, object]:
     """Publish all local terms referenced by the scoped product catalog."""
     products = db.scalars(
@@ -1687,6 +1761,8 @@ def sync_local_taxonomies_for_sync(
     category_ids: set[str] = set()
     brand_ids: set[str] = set()
     for product in products:
+        if product_ids is not None and product.id not in product_ids:
+            continue
         if vendor_id and not product_belongs_to_vendor(
             db,
             company_id=company_id,
@@ -1711,6 +1787,8 @@ def sync_local_taxonomies_for_sync(
         try:
             ensure_remote_category(db, company_id=company_id, category=category)
             synced_categories += 1
+        except WooCommerceRateLimitError:
+            raise
         except Exception as exc:
             errors.append(f"Category '{category.name}': {exc}")
 
@@ -1724,6 +1802,8 @@ def sync_local_taxonomies_for_sync(
         try:
             ensure_remote_brand(db, company_id=company_id, brand=brand)
             synced_brands += 1
+        except WooCommerceRateLimitError:
+            raise
         except Exception as exc:
             errors.append(f"Brand '{brand.name}': {exc}")
 
@@ -1735,8 +1815,33 @@ def sync_local_taxonomies_for_sync(
     }
 
 
+def pending_product_outbox_ids(db: Session, company_id: str) -> set[str]:
+    """Product records whose queued payload may need taxonomy mappings."""
+
+    now = utcnow()
+    return {
+        str(product_id)
+        for product_id in db.scalars(
+            select(SyncOutbox.resource_id).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.connector == CONNECTOR,
+                SyncOutbox.resource_type == "product",
+                SyncOutbox.operation == "push",
+                SyncOutbox.status.in_({"pending", "failed"}),
+                SyncOutbox.attempts < SYNC_OUTBOX_MAX_ATTEMPTS,
+                (SyncOutbox.next_attempt_at.is_(None)) | (SyncOutbox.next_attempt_at <= now),
+            )
+        ).all()
+        if product_id
+    }
+
+
 def product_taxonomy_payload(
-    db: Session, *, company_id: str, product: Product
+    db: Session,
+    *,
+    company_id: str,
+    product: Product,
+    require_mappings: bool = True,
 ) -> dict[str, object]:
     categories: list[dict[str, int]] = []
     for category_id in _product_category_ids(db, company_id=company_id, product=product):
@@ -1747,7 +1852,9 @@ def product_taxonomy_payload(
             internal_id=category_id,
         )
         if mapping is None:
-            raise ServiceError(409, f"Category {category_id} has not been synchronized.")
+            if require_mappings:
+                raise ServiceError(409, f"Category {category_id} has not been synchronized.")
+            continue
         categories.append({"id": int(mapping.external_resource_id)})
     payload: dict[str, object] = {"categories": categories}
     if product.brand_id:
@@ -1758,12 +1865,19 @@ def product_taxonomy_payload(
             internal_id=product.brand_id,
         )
         if mapping is None:
-            raise ServiceError(409, f"Brand {product.brand_id} has not been synchronized.")
+            if require_mappings:
+                raise ServiceError(409, f"Brand {product.brand_id} has not been synchronized.")
+            return payload
         payload["brands"] = [{"id": int(mapping.external_resource_id)}]
     return payload
 
 
-def build_woocommerce_product_payload(db: Session, product: Product) -> dict[str, object]:
+def build_woocommerce_product_payload(
+    db: Session,
+    product: Product,
+    *,
+    require_taxonomy_mappings: bool = True,
+) -> dict[str, object]:
     variant = db.scalar(
         select(ProductVariant)
         .where(
@@ -1785,7 +1899,16 @@ def build_woocommerce_product_payload(db: Session, product: Product) -> dict[str
             vendor_id = str(vendor_product)
 
     woo_status, default_visibility = _woocommerce_product_status(product.status)
-    catalog_visibility = product.visibility if product.status != "archived" else default_visibility
+    listing = db.scalar(
+        select(ProductChannelListing).where(
+            ProductChannelListing.company_id == product.company_id,
+            ProductChannelListing.product_id == product.id,
+            ProductChannelListing.channel == CONNECTOR,
+        )
+    )
+    if listing is not None and listing.listing_status != "published":
+        woo_status, default_visibility = "draft", "hidden"
+    catalog_visibility = product.visibility if woo_status == "publish" else default_visibility
     sku = product.sku or (variant.sku if variant and variant.sku else "")
     regular_price_minor = product.regular_price_minor or (variant.price_minor if variant else 0)
     sale_price_minor = product.sale_price_minor
@@ -1836,7 +1959,14 @@ def build_woocommerce_product_payload(db: Session, product: Product) -> dict[str
         for key, value in product.custom_metadata.items():
             meta_data.append({"key": str(key), "value": value})
         payload["meta_data"] = meta_data
-    payload.update(product_taxonomy_payload(db, company_id=product.company_id, product=product))
+    payload.update(
+        product_taxonomy_payload(
+            db,
+            company_id=product.company_id,
+            product=product,
+            require_mappings=require_taxonomy_mappings,
+        )
+    )
     return payload
 
 
@@ -1845,12 +1975,18 @@ def enqueue_product_sync(
     *,
     company_id: str | None,
     product: Product,
-    ensure_taxonomies: bool = True,
+    ensure_taxonomies: bool = False,
 ) -> SyncOutbox:
     scoped_company_id = require_company_id(company_id)
     if ensure_taxonomies:
         sync_product_taxonomies(db, company_id=scoped_company_id, product=product)
-    payload = build_woocommerce_product_payload(db, product)
+    # Product saves happen in interactive API requests. Do not issue taxonomy
+    # writes to WooCommerce here: the managed worker owns all remote publishing.
+    payload = build_woocommerce_product_payload(
+        db,
+        product,
+        require_taxonomy_mappings=False,
+    )
     payload_hash = hashlib.sha256(
         jsonlib.dumps(payload, sort_keys=True, ensure_ascii=True, default=str).encode("utf-8")
     ).hexdigest()
@@ -2023,8 +2159,22 @@ def enqueue_products_for_sync(
         )
         .order_by(Product.created_at)
     ).all()
+    published_product_ids = {
+        str(product_id)
+        for product_id in db.scalars(
+            select(ProductChannelListing.product_id).where(
+                ProductChannelListing.company_id == scoped_company_id,
+                ProductChannelListing.channel == CONNECTOR,
+                ProductChannelListing.listing_status == "published",
+            )
+        ).all()
+    }
     queued = 0
     for product in products:
+        # Company-owned catalog behavior remains unchanged. Vendor-owned products
+        # enter the shared storefront only when their channel listing is public.
+        if product.vendor_id and product.id not in published_product_ids:
+            continue
         if vendor_id and not product_belongs_to_vendor(
             db,
             company_id=scoped_company_id,
@@ -2108,8 +2258,22 @@ def enqueue_pending_product_media_for_sync(
         .where(Product.id.in_(product_ids))
         .order_by(Product.created_at, Product.id)
     ).all()
+    published_product_ids = {
+        str(product_id)
+        for product_id in db.scalars(
+            select(ProductChannelListing.product_id).where(
+                ProductChannelListing.company_id == scoped_company_id,
+                ProductChannelListing.channel == CONNECTOR,
+                ProductChannelListing.listing_status == "published",
+            )
+        ).all()
+    }
     queued = 0
     for product in products:
+        # Company-owned catalog behavior remains unchanged. Vendor-owned products
+        # enter the shared storefront only when their channel listing is public.
+        if product.vendor_id and product.id not in published_product_ids:
+            continue
         if vendor_id and not product_belongs_to_vendor(
             db,
             company_id=scoped_company_id,
@@ -2247,8 +2411,11 @@ def default_woocommerce_sync_stats() -> dict[str, object]:
 
 
 def _woocommerce_sync_active_key(company_id: str, vendor_id: str | None = None) -> str:
-    scope = f":vendor:{vendor_id}" if vendor_id else ""
-    return f"{CONNECTOR}:{company_id}{scope}"
+    # Every user in a company publishes to the same configured WooCommerce
+    # store. A company-wide key prevents separate vendor jobs from bursting
+    # requests at that store.
+    del vendor_id
+    return f"{CONNECTOR}:{company_id}"
 
 
 def enqueue_woocommerce_sync_run(
@@ -2267,7 +2434,7 @@ def enqueue_woocommerce_sync_run(
 
     scoped_company_id = require_company_id(company_id)
     normalized_mode = normalize_woocommerce_sync_mode(sync_mode)
-    active_key = _woocommerce_sync_active_key(scoped_company_id, vendor_id)
+    active_key = _woocommerce_sync_active_key(scoped_company_id)
     existing = db.scalar(
         select(SyncRunLog)
         .where(
@@ -2314,6 +2481,32 @@ def enqueue_woocommerce_sync_run(
             return existing, False
         raise
     return run_log, True
+
+
+def enqueue_pending_woocommerce_sync_runs(db: Session) -> int:
+    """Schedule one shared outbound run for each company with eligible work."""
+
+    now = utcnow()
+    company_ids = db.scalars(
+        select(SyncOutbox.company_id)
+        .where(
+            SyncOutbox.connector == CONNECTOR,
+            SyncOutbox.company_id.is_not(None),
+            SyncOutbox.status.in_({"pending", "failed"}),
+            SyncOutbox.attempts < SYNC_OUTBOX_MAX_ATTEMPTS,
+            (SyncOutbox.next_attempt_at.is_(None)) | (SyncOutbox.next_attempt_at <= now),
+        )
+        .distinct()
+    ).all()
+    created = 0
+    for company_id in company_ids:
+        _run, was_created = enqueue_woocommerce_sync_run(
+            db,
+            company_id=company_id,
+            sync_mode="outbox",
+        )
+        created += int(was_created)
+    return created
 
 
 def recover_stale_woocommerce_sync_records(
@@ -2384,6 +2577,7 @@ def claim_next_woocommerce_sync_run(
         .where(
             SyncRunLog.connector == CONNECTOR,
             SyncRunLog.status == "queued",
+            (SyncRunLog.next_attempt_at.is_(None)) | (SyncRunLog.next_attempt_at <= utcnow()),
         )
         .order_by(SyncRunLog.started_at.asc(), SyncRunLog.id.asc())
         .limit(1)
@@ -2404,6 +2598,7 @@ def claim_next_woocommerce_sync_run(
     run_log.worker_id = worker_id
     run_log.attempts += 1
     run_log.lease_expires_at = utcnow() + timedelta(seconds=SYNC_JOB_LEASE_SECONDS)
+    run_log.next_attempt_at = None
     run_log.error = None
     db.flush()
     return run_log
@@ -2461,6 +2656,11 @@ def make_woocommerce_request(
                         rest_api_mode=result.rest_api_mode,
                     )
                 return result
+            if status_code == 429:
+                raise WooCommerceRateLimitError(
+                    result,
+                    _rate_limit_delay_seconds(result.response),
+                )
             if status_code in {401, 403}:
                 last_auth_result = result
                 continue
@@ -4109,7 +4309,7 @@ def _pending_sync_outbox_records(
             SyncOutbox.company_id == company_id,
             SyncOutbox.connector == CONNECTOR,
             SyncOutbox.status.in_({"pending", "failed"}),
-            SyncOutbox.attempts < 5,
+            SyncOutbox.attempts < SYNC_OUTBOX_MAX_ATTEMPTS,
             (SyncOutbox.next_attempt_at.is_(None)) | (SyncOutbox.next_attempt_at <= now),
         )
     ).all()
@@ -4597,6 +4797,15 @@ def process_sync_outbox(
                 rec.status = "synced"
                 rec.last_error = None
                 rec.next_attempt_at = None
+            except WooCommerceRateLimitError:
+                # The run-level scheduler owns retry timing. Do not consume an
+                # outbox attempt or leave this row leased while it waits.
+                rec.status = "pending"
+                rec.attempts = max(0, rec.attempts - 1)
+                rec.last_error = "Deferred because WooCommerce rate limited the shared sync lane."
+                rec.next_attempt_at = None
+                checkpoint_record()
+                raise
             except Exception as exc:
                 rec.status = "failed"
                 rec.last_error = f"{exc} Retry scheduled when the backoff expires."
@@ -4719,7 +4928,8 @@ def run_woocommerce_sync(
             connector=CONNECTOR,
             direction=(
                 "outbound"
-                if normalized_mode == "products" and scoped_vendor_id
+                if normalized_mode == "outbox"
+                or (normalized_mode == "products" and scoped_vendor_id)
                 else "both"
                 if normalized_mode in {"incremental", "products"}
                 else "inbound"
@@ -4743,6 +4953,8 @@ def run_woocommerce_sync(
     merged_stats["sync_mode"] = normalized_mode
     merged_stats["scope"] = "vendor" if scoped_vendor_id else "company"
     merged_stats["vendor_id"] = scoped_vendor_id
+    for transient_key in ("rate_limited", "retry_at", "rate_limit_reason"):
+        merged_stats.pop(transient_key, None)
     run_log.stats = dict(merged_stats)
 
     def checkpoint() -> None:
@@ -4794,13 +5006,19 @@ def run_woocommerce_sync(
                 run_log.stats = dict(stats)
                 checkpoint()
 
-            if should_push_products:
+            if should_push_products or normalized_mode == "outbox":
                 stats["current_phase"] = "Syncing brands and categories"
                 run_log.stats = dict(stats)
+                outbox_product_ids = (
+                    pending_product_outbox_ids(db, scoped_company_id)
+                    if normalized_mode == "outbox"
+                    else None
+                )
                 taxonomy_stats = sync_local_taxonomies_for_sync(
                     db,
                     scoped_company_id,
                     vendor_id=scoped_vendor_id,
+                    product_ids=outbox_product_ids,
                 )
                 stats["synced_categories"] = taxonomy_stats["synced_categories"]
                 stats["synced_brands"] = taxonomy_stats["synced_brands"]
@@ -4816,6 +5034,22 @@ def run_woocommerce_sync(
                         + "; ".join(str(error) for error in taxonomy_errors),
                     )
 
+                if not should_push_products:
+                    stats["current_phase"] = "Syncing queued products"
+                    run_log.stats = dict(stats)
+                    stats_push = process_sync_outbox(
+                        db,
+                        scoped_company_id,
+                        checkpoint=checkpoint if commit_checkpoints else None,
+                    )
+                    stats["pushed_records"] = stats_push.get("pushed", 0)
+                    stats["pushed_media_records"] = stats_push.get("pushed_media", 0)
+                    stats["pushed_video_records"] = stats_push.get("pushed_videos", 0)
+                    stats["failed_records"] = stats_push.get("failed", 0)
+                    run_log.stats = dict(stats)
+                    checkpoint()
+
+            if should_push_products:
                 stats["current_phase"] = "Preparing product queue"
                 video_outbox_ids_before = set(
                     db.scalars(
@@ -4929,7 +5163,7 @@ def run_woocommerce_sync(
 
         stats["current_phase"] = "Finalizing sync"
         run_log.stats = dict(stats)
-        if normalized_mode in {"incremental", "products", "full_products"}:
+        if normalized_mode in {"incremental", "products", "full_products", "outbox"}:
             stats.update(
                 woocommerce_sync_outbox_status(
                     db, scoped_company_id, vendor_id=scoped_vendor_id
@@ -4955,7 +5189,45 @@ def run_woocommerce_sync(
             run_log.error = None
         run_log.finished_at = utcnow()
         run_log.lease_expires_at = None
+        run_log.next_attempt_at = None
         run_log.active_key = None
+    except WooCommerceRateLimitError as exc:
+        # Keep the same active key and replay the durable run later. Existing
+        # mappings/outbox rows make repeating a partially completed run safe.
+        if run_log.attempts >= RATE_LIMIT_MAX_RUN_ATTEMPTS:
+            run_log.status = "failed"
+            run_log.error = (
+                f"WooCommerce remained rate limited after {run_log.attempts} attempts: {exc}"
+            )
+            run_log.finished_at = utcnow()
+            run_log.active_key = None
+            run_log.next_attempt_at = None
+        else:
+            exponential_delay = min(
+                RATE_LIMIT_DEFAULT_DELAY_SECONDS * (2 ** max(run_log.attempts - 1, 0)),
+                RATE_LIMIT_MAX_DELAY_SECONDS,
+            )
+            delay = min(
+                max(exc.retry_after_seconds, exponential_delay), RATE_LIMIT_MAX_DELAY_SECONDS
+            )
+            delay *= random.uniform(0.9, 1.1)
+            retry_at = utcnow() + timedelta(seconds=delay)
+            stats = dict(run_log.stats or {})
+            stats.update(
+                {
+                    "current_phase": "Rate limited; retrying automatically",
+                    "rate_limited": True,
+                    "retry_at": retry_at.isoformat(),
+                    "rate_limit_reason": str(exc),
+                }
+            )
+            run_log.stats = stats
+            run_log.status = "queued"
+            run_log.error = f"WooCommerce rate limited; retrying at {retry_at.isoformat()}."
+            run_log.finished_at = None
+            run_log.lease_expires_at = None
+            run_log.next_attempt_at = retry_at
+            run_log.worker_id = None
     except Exception as exc:
         # A database error aborts the transaction. Roll it back before marking
         # the durable run as failed, otherwise the lease remains stuck running.
@@ -4968,6 +5240,7 @@ def run_woocommerce_sync(
         run_log.error = str(exc)
         run_log.finished_at = utcnow()
         run_log.lease_expires_at = None
+        run_log.next_attempt_at = None
         run_log.active_key = None
 
     db.flush()

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,7 @@ from erp.packages.core.catalog_services import (
     permanently_delete_product,
 )
 from erp.packages.core.config import get_settings
-from erp.packages.core.db.models import Brand, Category, ProductImage, ProductVideo, Role, UserRole
+from erp.packages.core.db.models import Brand, Category, ProductChannelListing, ProductImage, ProductVideo, Role, UserRole
 from erp.packages.core.schemas import (
     AdminVendorAccountCreate,
     AdminVendorAccountOut,
@@ -151,6 +152,16 @@ def _current_vendor(db: Session, context: AuthContext):
 
 
 def _enqueue_product_sync_if_configured(db: Session, company_id: str, product) -> None:
+    listing = db.scalar(
+        select(ProductChannelListing).where(
+            ProductChannelListing.company_id == company_id,
+            ProductChannelListing.product_id == product.id,
+            ProductChannelListing.channel == "woocommerce",
+            ProductChannelListing.listing_status == "published",
+        )
+    )
+    if listing is None:
+        return
     try:
         enqueue_product_sync(db, company_id=company_id, product=product)
     except ServiceError as exc:
@@ -160,7 +171,15 @@ def _enqueue_product_sync_if_configured(db: Session, company_id: str, product) -
 
 
 def _enqueue_product_video_sync_if_configured(db: Session, company_id: str, product) -> None:
-    if load_woocommerce_config(db, company_id) is not None:
+    listing = db.scalar(
+        select(ProductChannelListing).where(
+            ProductChannelListing.company_id == company_id,
+            ProductChannelListing.product_id == product.id,
+            ProductChannelListing.channel == "woocommerce",
+            ProductChannelListing.listing_status == "published",
+        )
+    )
+    if listing is not None and load_woocommerce_config(db, company_id) is not None:
         enqueue_product_video_sync(db, company_id=company_id, product=product)
 
 

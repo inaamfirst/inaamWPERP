@@ -38,6 +38,10 @@ export type User = {
 
 export type UserDetail = User & { vendor_profile: VendorProfile | null };
 
+export type PendingRegistration = UserDetail & {
+  registration_type: "staff" | "vendor";
+};
+
 export type UserForm = {
   username: string;
   password: string;

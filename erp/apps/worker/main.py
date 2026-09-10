@@ -23,6 +23,7 @@ def run_once(session_factory: SessionFactory | None = None) -> dict[str, object]
     from erp.packages.core.push_services import process_push_notifications
     from erp.packages.core.woocommerce_services import (
         claim_next_woocommerce_sync_run,
+        enqueue_pending_woocommerce_sync_runs,
         execute_woocommerce_sync_run,
         recover_stale_woocommerce_sync_records,
     )
@@ -50,6 +51,7 @@ def run_once(session_factory: SessionFactory | None = None) -> dict[str, object]
         # Push delivery state must survive independently from WooCommerce work.
         db.commit()
         recovery = recover_stale_woocommerce_sync_records(db)
+        queued_outbound_runs = enqueue_pending_woocommerce_sync_runs(db)
         claimed = claim_next_woocommerce_sync_run(db, worker_id=current_worker_id)
         # The lease must be durable before any network work begins.
         db.commit()
@@ -65,6 +67,7 @@ def run_once(session_factory: SessionFactory | None = None) -> dict[str, object]
                 "status": "idle",
                 "message": message,
                 **recovery,
+                "queued_outbound_runs": queued_outbound_runs,
                 "push": push_stats,
             }
 
@@ -91,6 +94,7 @@ def run_once(session_factory: SessionFactory | None = None) -> dict[str, object]
             "run_id": completed.id,
             "attempts": completed.attempts,
             **recovery,
+            "queued_outbound_runs": queued_outbound_runs,
             "push": push_stats,
         }
     except Exception as exc:

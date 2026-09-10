@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from erp.apps.api.main import create_app
+from erp.packages.core.config import Settings
 from erp.packages.core.db.base import Base
 from erp.packages.core.db.models import (
     Company,
@@ -585,3 +586,163 @@ def test_product_editor_fields_variants_images_and_uploads(
         files={"file": ("image.png", b"\x89PNG\r\n\x1a\nsmall", "image/png")},
     )
     assert tenant_upload.status_code == 404
+
+
+def test_product_videos_are_validated_uploaded_and_cleaned_up(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from erp.packages.core import catalog_services
+    from erp.packages.core.api import routes
+
+    settings = Settings(media_upload_dir=str(tmp_path / "media"))
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(catalog_services, "get_settings", lambda: settings)
+    client = harness.client
+    token = complete_first_use_setup(client)
+    headers = bearer(token)
+    created = client.post(
+        "/api/v1/catalog/products",
+        headers=headers,
+        json={
+            "name": "Video Product",
+            "sku": "VIDEO-1",
+            "product_type": "simple",
+            "status": "draft",
+            "regular_price_minor": 100,
+            "images": [{"url": "https://cdn.example.test/product.jpg", "sort_order": 0}],
+            "videos": [
+                {"url": "https://www.youtube.com/watch?v=abc123", "sort_order": 0},
+                {"url": "https://cdn.example.test/demo.mp4?version=1", "sort_order": 1},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    product = created.json()
+    product_id = product["id"]
+    assert [video["source_type"] for video in product["videos"]] == ["youtube", "mp4"]
+    assert product["images"][0]["url"] == "https://cdn.example.test/product.jpg"
+
+    too_many_videos = client.patch(
+        f"/api/v1/catalog/products/{product_id}",
+        headers=headers,
+        json={"videos": [{"url": f"https://vimeo.com/{index}"} for index in range(11)]},
+    )
+    assert too_many_videos.status_code == 422
+
+    rejected_url = client.patch(
+        f"/api/v1/catalog/products/{product_id}",
+        headers=headers,
+        json={"videos": [{"url": "https://example.test/demo.mov"}]},
+    )
+    assert rejected_url.status_code == 422
+
+    uploaded = client.post(
+        f"/api/v1/catalog/products/{product_id}/videos/upload",
+        headers=headers,
+        files={"file": ("demo.mp4", b"mp4-data", "video/mp4")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    uploaded_video = uploaded.json()
+    uploaded_path = tmp_path / "media" / uploaded_video["url"].removeprefix("/media/")
+    assert uploaded_video["source_type"] == "uploaded"
+    assert uploaded_path.is_file()
+
+    bad_upload = client.post(
+        f"/api/v1/catalog/products/{product_id}/videos/upload",
+        headers=headers,
+        files={"file": ("demo.webm", b"bad", "video/webm")},
+    )
+    assert bad_upload.status_code == 422
+    bad_mime = client.post(
+        f"/api/v1/catalog/products/{product_id}/videos/upload",
+        headers=headers,
+        files={"file": ("demo.mp4", b"bad", "application/octet-stream")},
+    )
+    assert bad_mime.status_code == 422
+    monkeypatch.setattr(routes, "PRODUCT_VIDEO_MAX_BYTES", 4)
+    oversized = client.post(
+        f"/api/v1/catalog/products/{product_id}/videos/upload",
+        headers=headers,
+        files={"file": ("large.mp4", b"12345", "video/mp4")},
+    )
+    assert oversized.status_code == 413
+    assert len(list((tmp_path / "media").rglob("*.mp4"))) == 1
+
+    sync_calls: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_enqueue_product_sync_if_configured",
+        lambda _db, *, company_id, product: sync_calls.append(product.id),
+    )
+    current_videos = client.get(
+        f"/api/v1/catalog/products/{product_id}", headers=headers
+    ).json()["videos"]
+    video_only_update = client.patch(
+        f"/api/v1/catalog/products/{product_id}",
+        headers=headers,
+        json={"videos": current_videos},
+    )
+    assert video_only_update.status_code == 200, video_only_update.text
+    assert sync_calls == []
+    assert video_only_update.json()["images"][0]["url"] == "https://cdn.example.test/product.jpg"
+
+    tenant_two_token = create_second_tenant_token(harness)
+    tenant_upload = client.post(
+        f"/api/v1/catalog/products/{product_id}/videos/upload",
+        headers=bearer(tenant_two_token),
+        files={"file": ("demo.mp4", b"mp4-data", "video/mp4")},
+    )
+    assert tenant_upload.status_code == 404
+
+    archive_response = client.delete(
+        f"/api/v1/catalog/products/{product_id}", headers=headers
+    )
+    assert archive_response.status_code == 200
+    permanent_delete = client.delete(
+        f"/api/v1/catalog/products/{product_id}/permanent", headers=headers
+    )
+    assert permanent_delete.status_code == 200
+    assert not uploaded_path.exists()
+
+
+def test_product_video_upload_uses_cached_wordpress_limit(
+    harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from erp.packages.core.api import routes
+
+    settings = Settings(media_upload_dir=str(tmp_path / "media"))
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        routes,
+        "saved_wordpress_video_plugin_status",
+        lambda _db, _company_id: {"max_upload_bytes": 4},
+    )
+    client = harness.client
+    token = complete_first_use_setup(client)
+    headers = bearer(token)
+    created = client.post(
+        "/api/v1/catalog/products",
+        headers=headers,
+        json={
+            "name": "WordPress Limited Video",
+            "sku": "VIDEO-WP-LIMIT",
+            "product_type": "simple",
+            "status": "draft",
+            "regular_price_minor": 100,
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.post(
+        f"/api/v1/catalog/products/{created.json()['id']}/videos/upload",
+        headers=headers,
+        files={"file": ("large.mp4", b"12345", "video/mp4")},
+    )
+
+    assert response.status_code == 413
+    assert "WordPress upload limit (4 bytes)" in response.text
+    assert not list((tmp_path / "media").rglob("*.mp4"))

@@ -492,10 +492,73 @@ class Warehouse(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    vendor_id: Mapped[str | None] = mapped_column(ForeignKey("vendors.id"))
+    warehouse_type: Mapped[str] = mapped_column(String(40), nullable=False, default="company")
     code: Mapped[str] = mapped_column(String(40), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ShopSupplier(Base, TimestampMixin):
+    __tablename__ = "shop_suppliers"
+    __table_args__ = (UniqueConstraint("company_id", "vendor_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(ForeignKey("vendors.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    contact_name: Mapped[str | None] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255))
+    phone: Mapped[str | None] = mapped_column(String(80))
+    address: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class ShopPurchase(Base, TimestampMixin):
+    __tablename__ = "shop_purchases"
+    __table_args__ = (UniqueConstraint("company_id", "vendor_id", "purchase_number"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(ForeignKey("vendors.id"), nullable=False)
+    supplier_id: Mapped[str] = mapped_column(ForeignKey("shop_suppliers.id"), nullable=False)
+    warehouse_id: Mapped[str] = mapped_column(ForeignKey("warehouses.id"), nullable=False)
+    purchase_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="received")
+    payment_status: Mapped[str] = mapped_column(String(40), nullable=False, default="unpaid")
+    total_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paid_minor: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
+class ShopPurchaseLine(Base, TimestampMixin):
+    __tablename__ = "shop_purchase_lines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    purchase_id: Mapped[str] = mapped_column(ForeignKey("shop_purchases.id"), nullable=False)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), nullable=False)
+    variant_id: Mapped[str | None] = mapped_column(ForeignKey("product_variants.id"))
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_cost_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_total_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ShopFinanceEntry(Base, TimestampMixin):
+    __tablename__ = "shop_finance_entries"
+    __table_args__ = (Index("ix_shop_finance_vendor_created", "company_id", "vendor_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(ForeignKey("vendors.id"), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="PKR")
+    source_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    memo: Mapped[str | None] = mapped_column(Text)
 
 
 class StockMovement(Base, TimestampMixin):
@@ -1197,6 +1260,7 @@ class SyncRunLog(Base):
     # WooCommerce-run-per-company guard without relying on a partial index.
     active_key: Mapped[str | None] = mapped_column(String(200), unique=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     worker_id: Mapped[str | None] = mapped_column(String(160))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued")

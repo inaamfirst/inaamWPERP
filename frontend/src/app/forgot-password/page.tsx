@@ -80,7 +80,7 @@ export default function ForgotPasswordPage() {
 
         <nav className={styles.links} aria-label="Authentication links">
           <Link href="/login">Back to sign in</Link>
-          <Link href="/register">Register as a vendor</Link>
+          <Link href="/register">Request an account</Link>
         </nav>
       </section>
     </main>

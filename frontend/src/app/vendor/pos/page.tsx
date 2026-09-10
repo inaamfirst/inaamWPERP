@@ -37,6 +37,7 @@ export default function VendorPos() {
   const [cartOpen, setCartOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState<{ order_number: string; total_minor: number } | null>(null);
 
   useEffect(() => {
     Promise.all([fetchApi("/marketplace/vendor/products"), fetchApi("/commerce/vendor/warehouses")])
@@ -86,6 +87,7 @@ export default function VendorPos() {
         }),
       }) as { order_number: string; total_minor: number };
       setMessage(`Sale ${sale.order_number} completed for PKR ${(sale.total_minor / 100).toFixed(2)}.`);
+      setReceipt(sale);
       setCart([]);
       setCustomerName("");
       setCartOpen(false);
@@ -125,6 +127,7 @@ export default function VendorPos() {
         </div>
       </div>
       {message && <div className={styles.notice} role="status">{message}</div>}
+      {receipt && <div className={styles.notice}><strong>Bill {receipt.order_number}</strong> — PKR {(receipt.total_minor / 100).toFixed(2)} <button type="button" className={styles.secondaryButton} onClick={() => window.print()}>Print receipt</button></div>}
       {error && <div className={styles.error} role="alert">{error}</div>}
 
       <section className={`${styles.panel} ${styles.posSetup}`} aria-label="Sale setup">
