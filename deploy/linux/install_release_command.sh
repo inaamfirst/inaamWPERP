@@ -14,6 +14,7 @@ EOF
 [[ "$(id -u)" == "0" ]] || { echo "Run this installer as root." >&2; exit 1; }
 KEY_FILE=""
 HEALTH_URL=""
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-inaamfirst/inaamWPERP}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --deploy-key-file) KEY_FILE="${2:-}"; shift 2 ;;
@@ -22,11 +23,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -r "$KEY_FILE" && "$HEALTH_URL" =~ ^https:// ]] || usage
+[[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "Invalid GITHUB_REPOSITORY." >&2; exit 64; }
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="/opt/inaam-erp"
 DEPLOY_USER="erp-deploy"
 CONFIG_FILE="/etc/inaam-erp/release.env"
+GITHUB_KEY="/etc/inaam-erp/github_deploy_key"
+GITHUB_SSH_DIR="/root/.ssh"
+install -d -m 0700 "$GITHUB_SSH_DIR" /etc/inaam-erp
+if [[ ! -f "$GITHUB_KEY" ]]; then
+  ssh-keygen -q -t ed25519 -N "" -C "inaam-erp-$GITHUB_REPOSITORY" -f "$GITHUB_KEY"
+  chmod 0600 "$GITHUB_KEY"
+  chmod 0644 "$GITHUB_KEY.pub"
+fi
+ssh-keyscan -H github.com >> "$GITHUB_SSH_DIR/known_hosts" 2>/dev/null || true
+chmod 0600 "$GITHUB_SSH_DIR/known_hosts"
+cat > "$GITHUB_SSH_DIR/config" <<EOF
+Host github.com
+  HostName github.com
+  IdentityFile $GITHUB_KEY
+  IdentitiesOnly yes
+EOF
+chmod 0600 "$GITHUB_SSH_DIR/config"
+if [[ -d "$APP_ROOT/.git" ]]; then
+  git -C "$APP_ROOT" remote set-url origin "git@github.com:$GITHUB_REPOSITORY.git"
+fi
 
 id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/sh "$DEPLOY_USER"
 install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "/home/$DEPLOY_USER/.ssh"
@@ -68,4 +90,7 @@ EOF
   chmod 0600 "$CONFIG_FILE"
 fi
 install -d -m 0700 /var/lib/inaam-erp/release-backups
-echo "Deployment key installed for $DEPLOY_USER. Test from the PC with the local deploy script."
+echo "Deployment key installed for $DEPLOY_USER."
+echo "Add this server GitHub deploy key to the private repository (Settings > Deploy keys, read-only):"
+cat "$GITHUB_KEY.pub"
+echo "After adding it, the server origin is configured as git@github.com:$GITHUB_REPOSITORY.git."
