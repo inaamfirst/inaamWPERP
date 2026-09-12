@@ -290,7 +290,7 @@ const emptyForm: ProductForm = {
 function money(minor: number | null | undefined) {
   return typeof minor === "number" && Number.isFinite(minor)
     ? `PKR ${(minor / 100).toFixed(2)}`
-    : "—";
+    : "â€”";
 }
 
 function listValue(values: string[] | undefined) {
@@ -929,7 +929,7 @@ export default function VendorProducts() {
             </div>
           </div>
           {loading ? (
-            <div className={styles.empty}>Loading products…</div>
+            <div className={styles.empty}>Loading productsâ€¦</div>
           ) : (
             <div className={styles.tableWrap}>
               <table className={`${styles.table} ${styles.mobileCardTable}`}>
@@ -956,7 +956,7 @@ export default function VendorProducts() {
                             {product.product_type || "simple"}
                           </span>
                         </td>
-                        <td data-label="SKU">{product.sku || "—"}</td>
+                        <td data-label="SKU">{product.sku || "â€”"}</td>
                         <td data-label="Price">
                           {money(product.regular_price_minor)}
                         </td>
@@ -2000,7 +2000,7 @@ export default function VendorProducts() {
                   className={styles.primaryButton}
                   disabled={saving}
                 >
-                  {saving ? "Saving…" : "Save product"}
+                  {saving ? "Savingâ€¦" : "Save product"}
                 </button>
                 {selectedId && (
                   <>
@@ -2063,7 +2063,7 @@ export default function VendorProducts() {
         Available product references for relationships:{" "}
         {productOptions
           .map((product) => `${product.name} (${product.id})`)
-          .join(" · ") || "none"}
+          .join(" Â· ") || "none"}
       </div>
       <ConfirmDialog
         open={confirmDelete}

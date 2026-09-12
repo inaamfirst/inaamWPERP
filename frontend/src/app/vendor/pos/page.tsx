@@ -17,7 +17,7 @@ function CartList({ cart, onRemove }: { cart: CartItem[]; onRemove: (productId: 
           <span>
             <strong>{item.name}</strong>
             <br />
-            <span className={styles.muted}>{item.quantity} × PKR {(item.regular_price_minor / 100).toFixed(2)}</span>
+            <span className={styles.muted}>{item.quantity} Ã— PKR {(item.regular_price_minor / 100).toFixed(2)}</span>
           </span>
           <button type="button" className={styles.dangerButton} onClick={() => onRemove(item.id)}>Remove</button>
         </div>
@@ -127,7 +127,7 @@ export default function VendorPos() {
         </div>
       </div>
       {message && <div className={styles.notice} role="status">{message}</div>}
-      {receipt && <div className={styles.notice}><strong>Bill {receipt.order_number}</strong> � PKR {(receipt.total_minor / 100).toFixed(2)} <button type="button" className={styles.secondaryButton} onClick={() => window.print()}>Print receipt</button></div>}
+      {receipt && <div className={styles.notice}><strong>Bill {receipt.order_number}</strong> — PKR {(receipt.total_minor / 100).toFixed(2)} <button type="button" className={styles.secondaryButton} onClick={() => window.print()}>Print receipt</button></div>}
       {error && <div className={styles.error} role="alert">{error}</div>}
 
       <section className={`${styles.panel} ${styles.posSetup}`} aria-label="Sale setup">
@@ -138,7 +138,7 @@ export default function VendorPos() {
           </div>
         </div>
         <div className={styles.formGrid}>
-          <label className={styles.field}>Warehouse<select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.code} · {warehouse.name}</option>)}</select></label>
+          <label className={styles.field}>Warehouse<select value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)}>{warehouses.map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.code} Â· {warehouse.name}</option>)}</select></label>
           <label className={styles.field}>Customer / walk-in name<input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Walk-in Customer" /></label>
           <label className={styles.field}>Payment method<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}><option value="cash">Cash</option><option value="bank">Bank</option><option value="card">Card</option><option value="cod">COD</option></select></label>
         </div>
