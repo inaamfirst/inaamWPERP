@@ -24,7 +24,7 @@ from erp.packages.core.catalog_services import (
     permanently_delete_product,
 )
 from erp.packages.core.config import get_settings
-from erp.packages.core.db.models import Brand, Category, ProductChannelListing, ProductImage, ProductVideo, Role, UserRole
+from erp.packages.core.db.models import Brand, Category, ProductChannelListing, ProductImage, ProductVideo, Role, UserRole, VendorProduct
 from erp.packages.core.schemas import (
     AdminVendorAccountCreate,
     AdminVendorAccountOut,
@@ -728,12 +728,20 @@ def current_vendor_catalog_products(
         vendor = _current_vendor(db, context)
         from erp.packages.core.catalog_services import list_products
 
+        assigned_ids = set(
+            db.scalars(
+                select(VendorProduct.product_id).where(
+                    VendorProduct.company_id == context.user.company_id,
+                    VendorProduct.vendor_id == vendor.id,
+                )
+            ).all()
+        )
         return [
             product_out(db, product)
             for product in list_products(
                 db, context.user.company_id, include_archived=include_archived
             )
-            if product.vendor_id == vendor.id
+            if product.vendor_id == vendor.id or product.id in assigned_ids
         ]
     except ServiceError as exc:
         raise service_error_to_http(exc) from exc

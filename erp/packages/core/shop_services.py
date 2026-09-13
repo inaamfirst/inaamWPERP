@@ -15,6 +15,7 @@ from erp.packages.core.db.models import (
     ShopPurchaseLine,
     ShopSupplier,
     VendorOrderItem,
+    VendorProduct,
     Warehouse,
 )
 from erp.packages.core.inventory_services import current_stock, record_stock_movement
@@ -49,6 +50,108 @@ def vendor_shop_warehouse(db: Session, company_id: str | None, vendor_id: str) -
         db.add(warehouse)
         db.flush()
     return warehouse
+
+
+def vendor_owns_product(db: Session, company_id: str, vendor_id: str, product: Product) -> bool:
+    """Return true for both current direct ownership and legacy assignments."""
+    if product.company_id != company_id:
+        return False
+    if product.vendor_id == vendor_id:
+        return True
+    return bool(
+        db.scalar(
+            select(VendorProduct.id).where(
+                VendorProduct.company_id == company_id,
+                VendorProduct.vendor_id == vendor_id,
+                VendorProduct.product_id == product.id,
+            )
+        )
+    )
+
+
+def sync_product_catalog_quantity_from_shop(
+    db: Session,
+    *,
+    company_id: str | None,
+    vendor_id: str,
+    product_id: str,
+) -> int:
+    """Copy the authoritative shop ledger balance onto the catalog product."""
+    scoped = require_company_id(company_id)
+    product = get_product(db, scoped, product_id)
+    if not vendor_owns_product(db, scoped, vendor_id, product):
+        raise ServiceError(403, "Product is outside the vendor shop.")
+    warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+    quantity = current_stock(
+        db,
+        company_id=scoped,
+        warehouse_id=warehouse.id,
+        product_id=product.id,
+        variant_id=None,
+    )
+    product.stock_quantity = quantity
+    product.manage_stock = True
+    product.stock_status = "outofstock" if quantity <= 0 else "instock"
+    db.flush()
+    return quantity
+
+
+def sync_product_shop_stock_quantity(
+    db: Session,
+    *,
+    company_id: str | None,
+    vendor_id: str,
+    user_id: str,
+    product_id: str,
+    target_quantity: int | None,
+    reason: str,
+    reference_type: str,
+    reference_id: str,
+) -> int:
+    """Reconcile an editor's numeric quantity against the shop stock ledger."""
+    if target_quantity is None:
+        return sync_product_catalog_quantity_from_shop(
+            db,
+            company_id=company_id,
+            vendor_id=vendor_id,
+            product_id=product_id,
+        )
+    if target_quantity < 0:
+        raise ServiceError(422, "Shop stock quantity cannot be negative.")
+    scoped = require_company_id(company_id)
+    product = get_product(db, scoped, product_id)
+    if not vendor_owns_product(db, scoped, vendor_id, product):
+        raise ServiceError(403, "Product is outside the vendor shop.")
+    warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+    current = current_stock(
+        db,
+        company_id=scoped,
+        warehouse_id=warehouse.id,
+        product_id=product.id,
+        variant_id=None,
+    )
+    delta = target_quantity - current
+    if delta:
+        record_stock_movement(
+            db,
+            company_id=scoped,
+            user_id=user_id,
+            payload=StockMovementCreate(
+                movement_type="adjustment",
+                warehouse_id=warehouse.id,
+                product_id=product.id,
+                quantity_delta=delta,
+                reference_type=reference_type,
+                reference_id=reference_id,
+                reason=reason,
+            ),
+        )
+    return sync_product_catalog_quantity_from_shop(
+        db,
+        company_id=scoped,
+        vendor_id=vendor_id,
+        product_id=product.id,
+    )
 
 
 def _supplier(db: Session, company_id: str, vendor_id: str, supplier_id: str) -> ShopSupplier:
@@ -104,10 +207,19 @@ def list_shop_catalog(db: Session, company_id: str | None, vendor_id: str) -> li
     """Return the small, POS-friendly catalog for one vendor's shop."""
     scoped = require_company_id(company_id)
     warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+    direct_ids = db.scalars(
+        select(Product.id).where(Product.company_id == scoped, Product.vendor_id == vendor_id)
+    ).all()
+    assigned_ids = db.scalars(
+        select(VendorProduct.product_id).where(
+            VendorProduct.company_id == scoped,
+            VendorProduct.vendor_id == vendor_id,
+        )
+    ).all()
     products = db.scalars(
         select(Product).where(
             Product.company_id == scoped,
-            Product.vendor_id == vendor_id,
+            Product.id.in_(set(direct_ids) | set(assigned_ids)),
             Product.status != "archived",
         ).order_by(Product.name)
     ).all()
@@ -240,7 +352,7 @@ def create_purchase(
     db.flush()
     for line in payload.items:
         product = get_product(db, scoped, line.product_id)
-        if product.vendor_id != vendor_id:
+        if not vendor_owns_product(db, scoped, vendor_id, product):
             raise ServiceError(403, "Purchase contains a product outside the vendor shop.")
         db.add(ShopPurchaseLine(
             purchase_id=purchase.id, product_id=product.id, variant_id=line.variant_id,
@@ -255,6 +367,13 @@ def create_purchase(
                 reference_id=purchase.id, reason="Vendor shop purchase receipt.",
             ),
         )
+        if line.variant_id is None:
+            sync_product_catalog_quantity_from_shop(
+                db,
+                company_id=scoped,
+                vendor_id=vendor_id,
+                product_id=product.id,
+            )
     if payload.payment_minor:
         db.add(ShopFinanceEntry(
             company_id=scoped, vendor_id=vendor_id, entry_type="purchase_payment", direction="out",

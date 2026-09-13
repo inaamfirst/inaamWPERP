@@ -319,9 +319,10 @@ def vendor_shop_stock_in(
         product = db.scalar(select(Product).where(
             Product.company_id == context.user.company_id,
             Product.id == payload.product_id,
-            Product.vendor_id == vendor_id,
         ))
-        if product is None:
+        if product is None or not shop_services.vendor_owns_product(
+            db, context.user.company_id, vendor_id, product
+        ):
             raise ServiceError(403, "Product is outside the vendor shop.")
         movement = record_stock_movement(
             db, company_id=context.user.company_id, user_id=context.user.id,
@@ -332,8 +333,14 @@ def vendor_shop_stock_in(
                 reason=payload.reason or "Opening shop stock.",
             ),
         )
+        quantity = shop_services.sync_product_catalog_quantity_from_shop(
+            db,
+            company_id=context.user.company_id,
+            vendor_id=vendor_id,
+            product_id=product.id,
+        )
         db.commit()
-        return {"id": movement.id, "product_id": product.id, "quantity": payload.quantity, "warehouse_id": warehouse.id}
+        return {"id": movement.id, "product_id": product.id, "quantity": payload.quantity, "quantity_on_hand": quantity, "warehouse_id": warehouse.id}
     except ServiceError as exc:
         db.rollback()
         raise service_error_to_http(exc) from exc
@@ -430,9 +437,11 @@ def admin_vendor_shop(vendor_id: str, context: AdminCommerceContext, db: DbSessi
 @router.get("/commerce/vendor/stock", response_model=list[dict[str, object]], tags=["commerce"])
 def vendor_stock(context: VendorStockViewContext, db: DbSession) -> list[dict[str, object]]:
     try:
-        return commerce_services.list_vendor_stock(
+        rows = commerce_services.list_vendor_stock(
             db, context.user.company_id, _vendor_id(db, context)
         )
+        db.commit()
+        return rows
     except ServiceError as exc:
         raise service_error_to_http(exc) from exc
 
@@ -479,23 +488,41 @@ def vendor_stock_movement(
 ) -> dict[str, object]:
     try:
         vendor_id = _vendor_id(db, context)
+        shop_warehouse = shop_services.vendor_shop_warehouse(
+            db, context.user.company_id, vendor_id
+        )
+        if payload.warehouse_id != shop_warehouse.id:
+            raise ServiceError(
+                403,
+                "Vendor stock adjustments must use this vendor's Vendor Shop warehouse.",
+            )
         product = db.scalar(
             select(Product).where(
                 Product.company_id == context.user.company_id,
                 Product.id == payload.product_id,
-                Product.vendor_id == vendor_id,
             )
         )
-        if product is None:
+        if product is None or not shop_services.vendor_owns_product(
+            db, context.user.company_id, vendor_id, product
+        ):
             raise ServiceError(403, "Product is outside the vendor scope.")
         movement = record_stock_movement(
             db, company_id=context.user.company_id, user_id=context.user.id, payload=payload
+        )
+        quantity = shop_services.sync_product_catalog_quantity_from_shop(
+            db,
+            company_id=context.user.company_id,
+            vendor_id=vendor_id,
+            product_id=product.id,
         )
         db.commit()
         return {
             "id": movement.id,
             "product_id": movement.product_id,
             "quantity_delta": movement.quantity_delta,
+            "warehouse_id": movement.warehouse_id,
+            "quantity_on_hand": quantity,
+            "stock_quantity": product.stock_quantity,
         }
     except ServiceError as exc:
         db.rollback()

@@ -552,10 +552,16 @@ def vendor_owned_product(db: Session, company_id: str, vendor_id: str, product_i
         select(Product).where(
             Product.company_id == company_id,
             Product.id == product_id,
-            Product.vendor_id == vendor_id,
         )
     )
-    if product is None:
+    assigned = db.scalar(
+        select(VendorProduct.id).where(
+            VendorProduct.company_id == company_id,
+            VendorProduct.vendor_id == vendor_id,
+            VendorProduct.product_id == product_id,
+        )
+    )
+    if product is None or (product.vendor_id != vendor_id and assigned is None):
         raise ServiceError(404, "Vendor product not found.")
     return product
 
@@ -585,6 +591,20 @@ def create_vendor_product(
         metadata_json={"self_service": True},
     )
     db.add(assignment)
+    if payload.stock_quantity is not None:
+        from erp.packages.core import shop_services
+
+        shop_services.sync_product_shop_stock_quantity(
+            db,
+            company_id=company_id,
+            vendor_id=vendor_id,
+            user_id=user_id,
+            product_id=product.id,
+            target_quantity=payload.stock_quantity,
+            reason="Opening vendor product stock.",
+            reference_type="vendor_product_inventory",
+            reference_id=product.id,
+        )
     record_audit(
         db,
         action="marketplace.vendor_product_created",
@@ -629,6 +649,20 @@ def update_vendor_product(
     if assignment and product.status == "active":
         assignment.approval_status = "published"
         assignment.published_at = utcnow()
+    if "stock_quantity" in fields and fields["stock_quantity"] is not None:
+        from erp.packages.core import shop_services
+
+        shop_services.sync_product_shop_stock_quantity(
+            db,
+            company_id=company_id,
+            vendor_id=vendor_id,
+            user_id=user_id,
+            product_id=product.id,
+            target_quantity=fields["stock_quantity"],
+            reason="Vendor product inventory quantity synchronized.",
+            reference_type="vendor_product_inventory",
+            reference_id=product.id,
+        )
     record_audit(
         db,
         action="marketplace.vendor_product_updated",

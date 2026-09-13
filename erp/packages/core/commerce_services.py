@@ -15,6 +15,7 @@ from erp.packages.core.db.models import (
     StockReservation,
     SupportContact,
     VendorOrderItem,
+    VendorProduct,
     Warehouse,
     ShopFinanceEntry,
 )
@@ -40,10 +41,16 @@ def _company(company_id: str | None) -> str:
 
 
 def _vendor_product_ids(db: Session, company_id: str, vendor_id: str) -> set[str]:
-    rows = db.scalars(
+    direct = db.scalars(
         select(Product.id).where(Product.company_id == company_id, Product.vendor_id == vendor_id)
     ).all()
-    return set(rows)
+    assigned = db.scalars(
+        select(VendorProduct.product_id).where(
+            VendorProduct.company_id == company_id,
+            VendorProduct.vendor_id == vendor_id,
+        )
+    ).all()
+    return set(direct) | set(assigned)
 
 
 def list_channel_listings(
@@ -266,10 +273,16 @@ def list_vendor_stock(
     db: Session, company_id: str | None, vendor_id: str
 ) -> list[dict[str, object]]:
     scoped = _company(company_id)
+    # Provisioning the dedicated shop here keeps the stock page usable even for
+    # an older vendor that has never opened the POS catalog yet.
+    from erp.packages.core.shop_services import vendor_shop_warehouse
+
+    shop_warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+    product_ids = _vendor_product_ids(db, scoped, vendor_id)
     products = list(
         db.scalars(
             select(Product)
-            .where(Product.company_id == scoped, Product.vendor_id == vendor_id)
+            .where(Product.company_id == scoped, Product.id.in_(product_ids))
             .order_by(Product.name)
         ).all()
     )
@@ -290,6 +303,8 @@ def list_vendor_stock(
                     "sku": product.sku,
                     "warehouse_id": warehouse.id,
                     "warehouse_name": warehouse.name,
+                    "is_shop_warehouse": warehouse.id == shop_warehouse.id,
+                    "can_adjust": warehouse.id == shop_warehouse.id,
                     "quantity_on_hand": current_stock(
                         db,
                         company_id=scoped,
@@ -382,6 +397,7 @@ def create_pos_sale(
         warehouse = get_warehouse(db, scoped, payload.warehouse_id)
     if not warehouse.is_active:
         raise ServiceError(409, "Cannot sell from an inactive warehouse.")
+    if vendor_id:
         allowed = _vendor_product_ids(db, scoped, vendor_id)
         if any(item.product_id not in allowed for item in payload.items):
             raise ServiceError(403, "POS sale contains a product outside the vendor scope.")
@@ -450,6 +466,15 @@ def create_pos_sale(
                 reason="POS sale stock deduction.",
             ),
         )
+        if vendor_id and item.variant_id is None:
+            from erp.packages.core.shop_services import sync_product_catalog_quantity_from_shop
+
+            sync_product_catalog_quantity_from_shop(
+                db,
+                company_id=scoped,
+                vendor_id=vendor_id,
+                product_id=item.product_id,
+            )
     for payment in payload.payments:
         record_payment(db, company_id=scoped, user_id=user_id, order_id=order.id, payload=payment)
     if vendor_id:
