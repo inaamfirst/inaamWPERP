@@ -5,13 +5,19 @@ from sqlalchemy.orm import Session
 
 from erp.packages.core.catalog_services import get_product, require_company_id
 from erp.packages.core.db.models import (
+    Customer,
+    Order,
+    Payment,
+    Product,
+    ProductChannelListing,
     ShopFinanceEntry,
     ShopPurchase,
     ShopPurchaseLine,
     ShopSupplier,
+    VendorOrderItem,
     Warehouse,
 )
-from erp.packages.core.inventory_services import record_stock_movement
+from erp.packages.core.inventory_services import current_stock, record_stock_movement
 from erp.packages.core.schemas import (
     ShopPurchaseCreate,
     ShopPurchasePaymentCreate,
@@ -67,6 +73,130 @@ def list_suppliers(db: Session, company_id: str | None, vendor_id: str) -> list[
             .order_by(ShopSupplier.name)
         ).all()
     )
+
+
+def supplier_outstanding(db: Session, company_id: str | None, vendor_id: str, supplier_id: str) -> int:
+    scoped = require_company_id(company_id)
+    return int(db.scalar(select(func.coalesce(func.sum(ShopPurchase.total_minor - ShopPurchase.paid_minor), 0)).where(
+        ShopPurchase.company_id == scoped,
+        ShopPurchase.vendor_id == vendor_id,
+        ShopPurchase.supplier_id == supplier_id,
+    )) or 0)
+
+
+def update_supplier(
+    db: Session, *, company_id: str | None, vendor_id: str, user_id: str,
+    supplier_id: str, payload: ShopSupplierCreate,
+) -> ShopSupplier:
+    scoped = require_company_id(company_id)
+    supplier = _supplier(db, scoped, vendor_id, supplier_id)
+    for key, value in payload.model_dump().items():
+        setattr(supplier, key, value)
+    record_audit(
+        db, action="shop.supplier_updated", company_id=scoped, user_id=user_id,
+        entity_type="shop_supplier", entity_id=supplier.id, metadata={"vendor_id": vendor_id},
+    )
+    db.flush()
+    return supplier
+
+
+def list_shop_catalog(db: Session, company_id: str | None, vendor_id: str) -> list[dict[str, object]]:
+    """Return the small, POS-friendly catalog for one vendor's shop."""
+    scoped = require_company_id(company_id)
+    warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
+    products = db.scalars(
+        select(Product).where(
+            Product.company_id == scoped,
+            Product.vendor_id == vendor_id,
+            Product.status != "archived",
+        ).order_by(Product.name)
+    ).all()
+    listings = {
+        row.product_id: row
+        for row in db.scalars(
+            select(ProductChannelListing).where(
+                ProductChannelListing.company_id == scoped,
+                ProductChannelListing.channel == "woocommerce",
+            )
+        ).all()
+    }
+    result: list[dict[str, object]] = []
+    for product in products:
+        quantity = current_stock(
+            db, company_id=scoped, warehouse_id=warehouse.id,
+            product_id=product.id, variant_id=None,
+        )
+        listing = listings.get(product.id)
+        result.append({
+            "id": product.id,
+            "name": product.name,
+            "sku": product.sku,
+            "barcode": product.barcode,
+            "regular_price_minor": product.regular_price_minor,
+            "sale_price_minor": product.sale_price_minor,
+            "stock_quantity": quantity,
+            "stock_status": product.stock_status,
+            "low_stock": quantity <= 5,
+            "online_status": listing.listing_status if listing else "private",
+            "category_id": product.category_id,
+        })
+    return result
+
+
+def list_purchases(db: Session, company_id: str | None, vendor_id: str, limit: int = 100) -> list[ShopPurchase]:
+    scoped = require_company_id(company_id)
+    return list(db.scalars(
+        select(ShopPurchase).where(
+            ShopPurchase.company_id == scoped, ShopPurchase.vendor_id == vendor_id,
+        ).order_by(ShopPurchase.created_at.desc()).limit(limit)
+    ).all())
+
+
+def purchase_detail(db: Session, company_id: str | None, vendor_id: str, purchase_id: str) -> dict[str, object]:
+    scoped = require_company_id(company_id)
+    purchase = db.scalar(select(ShopPurchase).where(
+        ShopPurchase.company_id == scoped, ShopPurchase.vendor_id == vendor_id,
+        ShopPurchase.id == purchase_id,
+    ))
+    if purchase is None:
+        raise ServiceError(404, "Shop purchase not found.")
+    lines = db.scalars(select(ShopPurchaseLine).where(ShopPurchaseLine.purchase_id == purchase.id)).all()
+    return {"purchase": purchase, "lines": list(lines)}
+
+
+def list_recent_sales(
+    db: Session,
+    company_id: str | None,
+    vendor_id: str,
+    limit: int = 50,
+    sales_channel: str | None = "pos",
+) -> list[dict[str, object]]:
+    scoped = require_company_id(company_id)
+    query = select(Order).join(VendorOrderItem, VendorOrderItem.order_id == Order.id).where(
+        Order.company_id == scoped,
+        VendorOrderItem.company_id == scoped,
+        VendorOrderItem.vendor_id == vendor_id,
+    )
+    if sales_channel is not None:
+        query = query.where(Order.sales_channel == sales_channel)
+    orders = db.scalars(query.distinct().order_by(Order.created_at.desc()).limit(limit)).all()
+    result: list[dict[str, object]] = []
+    for order in orders:
+        customer = db.get(Customer, order.customer_id)
+        payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at).limit(1))
+        result.append({
+            "id": order.id,
+            "bill_number": order.order_number,
+            "created_at": order.created_at,
+            "customer": customer.full_name if customer else "Walk-in Customer",
+            "total_minor": order.total_minor,
+            "currency": order.currency,
+            "channel": order.sales_channel,
+            "payment_method": payment.method if payment else "unpaid",
+            "payment_status": order.payment_status,
+            "status": order.status,
+        })
+    return result
 
 
 def create_supplier(

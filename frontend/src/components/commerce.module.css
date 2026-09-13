@@ -1251,3 +1251,83 @@
   .notice,
   .error { border: 1px solid CanvasText; }
 }
+
+/* Touch-first vendor shop POS */
+.posShell { max-width: 1600px; margin: 0 auto; padding: 20px; padding-bottom: 90px; }
+.posTopBar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.posStockBadge { color: #146c43; background: #e8f7ee; border: 1px solid #b8e1c7; border-radius: 999px; padding: 10px 16px; font-weight: 700; white-space: nowrap; }
+.posActionBar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.posActionButton { min-height: 48px; border: 1px solid var(--border, #d8dee8); border-radius: 12px; background: var(--surface, #fff); color: inherit; display: inline-flex; align-items: center; justify-content: center; padding: 10px 15px; font-weight: 700; text-decoration: none; cursor: pointer; }
+.posActionButton:hover, .posActionButton:focus-visible { border-color: #4361ee; outline: 3px solid rgba(67, 97, 238, .18); }
+.posActionPrimary { color: #fff; background: #3155d9; border-color: #3155d9; }
+.posMainGrid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(360px, .8fr); gap: 18px; align-items: start; }
+.posCatalogPanel, .posCheckoutPanel { background: var(--surface, #fff); border: 1px solid var(--border, #d8dee8); border-radius: 16px; padding: 18px; box-shadow: 0 5px 18px rgba(24, 39, 75, .06); }
+.posCheckoutPanel { position: sticky; top: 16px; }
+.posPanelHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.posSearch { min-height: 48px; width: min(340px, 48%); border: 2px solid #cdd5e2; border-radius: 12px; padding: 10px 14px; font-size: 16px; }
+.posSearch:focus { border-color: #3155d9; outline: 3px solid rgba(49, 85, 217, .14); }
+.posProductGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.posProductCard { min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; gap: 12px; border: 1px solid #dce3ee; border-radius: 14px; padding: 15px; background: #fbfcfe; }
+.posProductCardInfo { display: flex; flex-direction: column; gap: 6px; font-size: 16px; }
+.posProductCardInfo span, .posProductMeta span, .posCartRow span, .posSimpleRow span { color: #667085; font-size: 13px; }
+.posProductMeta { display: flex; justify-content: space-between; align-items: end; gap: 8px; }
+.posLowStock { color: #b54708 !important; font-weight: 700; }
+.posAddButton, .posCompleteButton { min-height: 50px; border: 0; border-radius: 12px; background: #3155d9; color: #fff; font-weight: 800; font-size: 16px; cursor: pointer; padding: 10px 16px; }
+.posAddButton:disabled, .posCompleteButton:disabled { cursor: not-allowed; opacity: .45; }
+.posCheckoutPanel { min-height: 560px; }
+.posClearButton, .posCloseButton, .posMoreButton { min-height: 44px; border: 1px solid #cfd7e4; border-radius: 10px; background: #fff; padding: 8px 12px; cursor: pointer; font-weight: 700; }
+.posCartList { min-height: 160px; max-height: 330px; overflow: auto; border-top: 1px solid #e6eaf0; border-bottom: 1px solid #e6eaf0; }
+.posCartRow { display: flex; justify-content: space-between; gap: 12px; padding: 13px 0; border-bottom: 1px solid #eef1f5; }
+.posCartRow > div:first-child { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.posQtyControls { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: end; }
+.posQtyButton { width: 44px; height: 44px; border: 1px solid #c8d2e1; border-radius: 10px; background: #fff; font-size: 24px; cursor: pointer; }
+.posRemoveButton { border: 0; background: transparent; color: #b42318; cursor: pointer; font-size: 12px; }
+.posTotals { display: grid; gap: 7px; padding: 15px 0; }
+.posTotals > div { display: flex; justify-content: space-between; gap: 12px; }
+.posGrandTotal { font-size: 22px; border-top: 2px solid #e2e7ef; padding-top: 11px; margin-top: 5px; }
+.posCheckoutForm { display: grid; gap: 12px; }
+.posField { display: grid; gap: 6px; font-weight: 700; font-size: 14px; }
+.posField input, .posField select, .posField textarea, .posInlineForm input { width: 100%; min-height: 46px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 9px 11px; font: inherit; background: #fff; }
+.posPaymentGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.posPaymentButton { min-height: 48px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 800; }
+.posPaymentSelected { color: #fff; background: #3155d9; border-color: #3155d9; }
+.posCashBox { display: grid; grid-template-columns: 1fr 1fr; align-items: end; gap: 10px; padding: 11px; border: 1px solid #cddcfb; border-radius: 12px; background: #f3f6ff; }
+.posCashBox > div { display: grid; gap: 4px; padding-bottom: 9px; }
+.posCashBox strong { font-size: 20px; }
+.posMoreButton { width: 100%; }
+.posMoreOptions { display: grid; gap: 10px; padding: 12px; background: #f8fafc; border-radius: 12px; }
+.posSuccess { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; padding: 14px; border: 1px solid #b8e1c7; border-radius: 12px; background: #e8f7ee; color: #146c43; }
+.posSmallButton, .posLinkButton { min-height: 40px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; padding: 8px 12px; cursor: pointer; font-weight: 700; text-decoration: none; color: inherit; }
+.posMobileBar { display: none; }
+.posModalBackdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 18px; background: rgba(15, 23, 42, .5); }
+.posModal { width: min(620px, 100%); max-height: min(90vh, 820px); overflow: auto; border-radius: 16px; background: #fff; box-shadow: 0 24px 80px rgba(15, 23, 42, .3); }
+.posModalHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid #e6eaf0; }
+.posModalHeader h2 { margin: 0; }
+.posModalBody { display: grid; gap: 14px; padding: 20px; }
+.posModalActions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.posHint { margin: 0; padding: 10px; border-radius: 9px; background: #fff8e8; color: #8a5a00; }
+.posFormTwo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.posInlineForm { display: grid; grid-template-columns: 1.2fr 1fr auto; gap: 8px; }
+.posSimpleList { display: grid; gap: 8px; }
+.posSimpleRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #e5eaf1; border-radius: 10px; padding: 11px; }
+.posSimpleRow > div { display: grid; gap: 4px; min-width: 0; }
+
+@media (max-width: 900px) {
+  .posMainGrid { grid-template-columns: 1fr; }
+  .posCheckoutPanel { position: static; }
+}
+@media (max-width: 620px) {
+  .posShell { padding: 12px 10px 88px; }
+  .posTopBar { align-items: flex-start; flex-direction: column; }
+  .posActionBar { display: grid; grid-template-columns: repeat(2, 1fr); }
+  .posActionButton { padding: 9px 7px; font-size: 13px; text-align: center; }
+  .posPanelHeading { align-items: stretch; flex-direction: column; }
+  .posSearch { width: 100%; }
+  .posProductGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .posProductCard { min-height: 166px; padding: 11px; }
+  .posPaymentGrid { grid-template-columns: repeat(2, 1fr); }
+  .posCashBox, .posFormTwo, .posInlineForm { grid-template-columns: 1fr; }
+  .posMobileBar { position: fixed; z-index: 20; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; background: #fff; border-top: 1px solid #d8dee8; box-shadow: 0 -5px 18px rgba(24, 39, 75, .1); }
+  .posMobileBar .posCompleteButton { min-height: 46px; padding: 8px 12px; }
+  .posSuccess { align-items: stretch; flex-direction: column; }
+}

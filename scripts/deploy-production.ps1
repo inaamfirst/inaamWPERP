@@ -3,14 +3,18 @@ param(
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$Message,
-    [string]$ConfigPath = (Join-Path $PSScriptRoot "deploy-production.local.psd1"),
+    [string]$ConfigPath,
     [switch]$StageSafeChanges,
     [switch]$SkipTests,
     [switch]$NoHealthCheck
 )
 
 $ErrorActionPreference = "Stop"
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $ConfigPath = Join-Path $scriptRoot "deploy-production.local.psd1"
+}
+$repoRoot = (Resolve-Path (Join-Path $scriptRoot "..")).Path
 Set-Location $repoRoot
 
 function Invoke-Git {

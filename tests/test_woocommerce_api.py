@@ -1964,6 +1964,16 @@ def test_vendor_products_mode_pushes_only_vendor_catalog(
         db.add_all([owned, other])
         db.flush()
         db.add(
+            ProductChannelListing(
+                company_id=company_id,
+                product_id=owned.id,
+                vendor_id=vendor.id,
+                channel="woocommerce",
+                listing_status="published",
+                sync_status="pending",
+            )
+        )
+        db.add(
             ProductCategoryLink(
                 company_id=company_id,
                 product_id=owned.id,

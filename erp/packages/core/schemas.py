@@ -864,7 +864,9 @@ class PaymentOut(BaseModel):
 class PosSaleCreate(BaseModel):
     customer_id: str | None = None
     customer_name: str | None = Field(default=None, max_length=255)
-    warehouse_id: str
+    # Vendor POS always uses the vendor's server-selected shop warehouse.
+    # Admin POS may still provide an explicit warehouse.
+    warehouse_id: str | None = None
     currency: str = Field(default="PKR", min_length=3, max_length=3)
     items: list[OrderItemCreate] = Field(min_length=1, max_length=200)
     discount_minor: int = Field(default=0, ge=0)
@@ -2263,3 +2265,9 @@ class ShopPublicationBulkUpdate(BaseModel):
 class ShopPurchasePaymentCreate(BaseModel):
     amount_minor: int = Field(gt=0)
     memo: str | None = Field(default=None, max_length=5000)
+
+
+class ShopStockInCreate(BaseModel):
+    product_id: str
+    quantity: int = Field(gt=0)
+    reason: str | None = Field(default=None, max_length=5000)

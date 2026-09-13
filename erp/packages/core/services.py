@@ -83,6 +83,8 @@ VENDOR_SELF_SERVICE_PERMISSIONS = frozenset(
         "vendor.stock.view",
         "vendor.stock.manage",
         "vendor.reports.view",
+        "vendor.shop.purchases.manage",
+        "vendor.shop.accounting.view",
     }
 )
 MANAGER_CORE_PERMISSIONS = frozenset(
@@ -212,7 +214,13 @@ def seed_default_roles(db: Session, company_id: str | None) -> None:
                     db.add(RolePermission(role_id=role.id, permission_id=permissions[perm_key].id))
                     added_role_permissions = True
         else:
-            if config["overwrite"] or role_name == VENDOR_ROLE_NAME:
+            # Keep explicitly customized vendor roles intact. The canonical
+            # default role is synchronized so new shop permissions reach
+            # existing vendor accounts after an upgrade.
+            if config["overwrite"] or (
+                role_name == VENDOR_ROLE_NAME
+                and role.description == VENDOR_ROLE_DESCRIPTION
+            ):
                 existing_permission_ids = set(
                     db.scalars(
                         select(RolePermission.permission_id).where(

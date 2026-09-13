@@ -13,7 +13,7 @@ from erp.packages.core.api.dependencies import (
     service_error_to_http,
 )
 from erp.packages.core.api.serializers import order_out
-from erp.packages.core.db.models import Product, ProductChannelListing, Warehouse
+from erp.packages.core.db.models import Order, Product, ProductChannelListing, VendorOrderItem, Warehouse
 from erp.packages.core.inventory_services import record_stock_movement
 from erp.packages.core.marketplace_services import vendor_for_user
 from erp.packages.core.schemas import (
@@ -29,6 +29,7 @@ from erp.packages.core.schemas import (
     ShopPublicationBulkUpdate,
     ShopPurchaseCreate,
     ShopPurchasePaymentCreate,
+    ShopStockInCreate,
     ShopSupplierCreate,
 )
 from erp.packages.core.services import AuthContext, ServiceError
@@ -224,9 +225,10 @@ def admin_channel_listing_update(
         raise service_error_to_http(exc) from exc
 
 
-def _supplier_out(row) -> dict[str, object]:
+def _supplier_out(row, *, outstanding_minor: int = 0) -> dict[str, object]:
     return {"id": row.id, "name": row.name, "contact_name": row.contact_name, "email": row.email,
-            "phone": row.phone, "address": row.address, "is_active": row.is_active}
+            "phone": row.phone, "address": row.address, "is_active": row.is_active,
+            "outstanding_minor": outstanding_minor}
 
 
 def _purchase_out(row) -> dict[str, object]:
@@ -257,7 +259,16 @@ def vendor_channel_listing_bulk_update(
 
 @router.get("/commerce/vendor/shop/suppliers", tags=["commerce"])
 def vendor_shop_suppliers(context: VendorShopPurchaseContext, db: DbSession) -> list[dict[str, object]]:
-    return [_supplier_out(row) for row in shop_services.list_suppliers(db, context.user.company_id, _vendor_id(db, context))]
+    vendor_id = _vendor_id(db, context)
+    return [
+        _supplier_out(
+            row,
+            outstanding_minor=shop_services.supplier_outstanding(
+                db, context.user.company_id, vendor_id, row.id
+            ),
+        )
+        for row in shop_services.list_suppliers(db, context.user.company_id, vendor_id)
+    ]
 
 
 @router.post("/commerce/vendor/shop/suppliers", status_code=201, tags=["commerce"])
@@ -269,6 +280,100 @@ def vendor_shop_supplier_create(payload: ShopSupplierCreate, context: VendorShop
     except ServiceError as exc:
         db.rollback()
         raise service_error_to_http(exc) from exc
+
+
+@router.patch("/commerce/vendor/shop/suppliers/{supplier_id}", tags=["commerce"])
+def vendor_shop_supplier_update(
+    supplier_id: str, payload: ShopSupplierCreate, context: VendorShopPurchaseContext, db: DbSession
+) -> dict[str, object]:
+    try:
+        row = shop_services.update_supplier(
+            db, company_id=context.user.company_id, vendor_id=_vendor_id(db, context),
+            user_id=context.user.id, supplier_id=supplier_id, payload=payload,
+        )
+        db.commit()
+        return _supplier_out(row)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.get("/commerce/vendor/shop/catalog", tags=["commerce"])
+def vendor_shop_catalog(context: VendorWarehouseViewContext, db: DbSession) -> list[dict[str, object]]:
+    try:
+        rows = shop_services.list_shop_catalog(db, context.user.company_id, _vendor_id(db, context))
+        # The first catalog visit provisions the vendor's dedicated shop location.
+        db.commit()
+        return rows
+    except ServiceError as exc:
+        raise service_error_to_http(exc) from exc
+
+
+@router.post("/commerce/vendor/shop/stock-in", status_code=201, tags=["commerce"])
+def vendor_shop_stock_in(
+    payload: ShopStockInCreate, context: VendorShopPurchaseContext, db: DbSession
+) -> dict[str, object]:
+    try:
+        vendor_id = _vendor_id(db, context)
+        warehouse = shop_services.vendor_shop_warehouse(db, context.user.company_id, vendor_id)
+        product = db.scalar(select(Product).where(
+            Product.company_id == context.user.company_id,
+            Product.id == payload.product_id,
+            Product.vendor_id == vendor_id,
+        ))
+        if product is None:
+            raise ServiceError(403, "Product is outside the vendor shop.")
+        movement = record_stock_movement(
+            db, company_id=context.user.company_id, user_id=context.user.id,
+            payload=StockMovementCreate(
+                movement_type="stock_in", warehouse_id=warehouse.id,
+                product_id=product.id, quantity=payload.quantity,
+                reference_type="shop_opening_stock", reference_id=product.id,
+                reason=payload.reason or "Opening shop stock.",
+            ),
+        )
+        db.commit()
+        return {"id": movement.id, "product_id": product.id, "quantity": payload.quantity, "warehouse_id": warehouse.id}
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.get("/commerce/vendor/shop/purchases", tags=["commerce"])
+def vendor_shop_purchase_list(context: VendorShopPurchaseContext, db: DbSession) -> list[dict[str, object]]:
+    return [_purchase_out(row) for row in shop_services.list_purchases(db, context.user.company_id, _vendor_id(db, context))]
+
+
+@router.get("/commerce/vendor/shop/purchases/{purchase_id}", tags=["commerce"])
+def vendor_shop_purchase_detail(purchase_id: str, context: VendorShopPurchaseContext, db: DbSession) -> dict[str, object]:
+    detail = shop_services.purchase_detail(db, context.user.company_id, _vendor_id(db, context), purchase_id)
+    purchase = detail["purchase"]
+    return {
+        "purchase": _purchase_out(purchase),
+        "lines": [
+            {"id": line.id, "product_id": line.product_id, "variant_id": line.variant_id,
+             "quantity": line.quantity, "unit_cost_minor": line.unit_cost_minor,
+             "line_total_minor": line.line_total_minor}
+            for line in detail["lines"]
+        ],
+    }
+
+
+@router.get("/commerce/vendor/shop/sales", tags=["commerce"])
+def vendor_shop_sales(context: VendorCommerceOrderContext, db: DbSession) -> list[dict[str, object]]:
+    return shop_services.list_recent_sales(db, context.user.company_id, _vendor_id(db, context))
+
+
+@router.get("/commerce/vendor/shop/sales/{order_id}", response_model=OrderOut, tags=["commerce"])
+def vendor_shop_sale_detail(order_id: str, context: VendorCommerceOrderContext, db: DbSession) -> OrderOut:
+    vendor_id = _vendor_id(db, context)
+    order = db.scalar(select(Order).join(VendorOrderItem, VendorOrderItem.order_id == Order.id).where(
+        Order.company_id == context.user.company_id, Order.id == order_id,
+        Order.sales_channel == "pos", VendorOrderItem.vendor_id == vendor_id,
+    ))
+    if order is None:
+        raise service_error_to_http(ServiceError(404, "Shop sale not found."))
+    return order_out(db, order)
 
 
 @router.post("/commerce/vendor/shop/purchases", status_code=201, tags=["commerce"])
@@ -305,7 +410,20 @@ def admin_vendor_shop(vendor_id: str, context: AdminCommerceContext, db: DbSessi
     return {
         "warehouse": {"id": warehouse.id, "code": warehouse.code, "name": warehouse.name},
         "accounting": shop_services.overview(db, context.user.company_id, vendor_id),
-        "suppliers": [_supplier_out(row) for row in shop_services.list_suppliers(db, context.user.company_id, vendor_id)],
+        "suppliers": [
+            _supplier_out(
+                row,
+                outstanding_minor=shop_services.supplier_outstanding(
+                    db, context.user.company_id, vendor_id, row.id
+                ),
+            )
+            for row in shop_services.list_suppliers(db, context.user.company_id, vendor_id)
+        ],
+        "catalog": shop_services.list_shop_catalog(db, context.user.company_id, vendor_id),
+        "purchases": [_purchase_out(row) for row in shop_services.list_purchases(db, context.user.company_id, vendor_id)],
+        "sales": shop_services.list_recent_sales(
+            db, context.user.company_id, vendor_id, sales_channel=None
+        ),
         "stock": commerce_services.list_vendor_stock(db, context.user.company_id, vendor_id),
     }
 

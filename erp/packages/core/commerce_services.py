@@ -369,15 +369,19 @@ def create_pos_sale(
         for existing in existing_orders:
             if existing.metadata_json.get("idempotency_key") == payload.idempotency_key:
                 return existing
-    warehouse = get_warehouse(db, scoped, payload.warehouse_id)
-    if not warehouse.is_active:
-        raise ServiceError(409, "Cannot sell from an inactive warehouse.")
     if vendor_id:
         from erp.packages.core.shop_services import vendor_shop_warehouse
 
         shop_warehouse = vendor_shop_warehouse(db, scoped, vendor_id)
-        if warehouse.id != shop_warehouse.id:
+        if payload.warehouse_id is not None and payload.warehouse_id != shop_warehouse.id:
             raise ServiceError(403, "POS sales must use this vendor's shop warehouse.")
+        warehouse = shop_warehouse
+    else:
+        if payload.warehouse_id is None:
+            raise ServiceError(422, "A warehouse is required for admin POS sales.")
+        warehouse = get_warehouse(db, scoped, payload.warehouse_id)
+    if not warehouse.is_active:
+        raise ServiceError(409, "Cannot sell from an inactive warehouse.")
         allowed = _vendor_product_ids(db, scoped, vendor_id)
         if any(item.product_id not in allowed for item in payload.items):
             raise ServiceError(403, "POS sale contains a product outside the vendor scope.")

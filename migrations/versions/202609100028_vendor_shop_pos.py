@@ -73,17 +73,11 @@ def upgrade() -> None:
     op.create_index("ix_shop_finance_vendor_created", "shop_finance_entries", ["company_id", "vendor_id", "created_at"])
     bind = op.get_bind()
     permissions = sa.table("permissions", sa.column("id", sa.String), sa.column("key", sa.String), sa.column("description", sa.String))
-    roles = sa.table("roles", sa.column("id", sa.String), sa.column("name", sa.String))
-    role_permissions = sa.table("role_permissions", sa.column("role_id", sa.String), sa.column("permission_id", sa.String))
     for key in ("vendor.shop.purchases.manage", "vendor.shop.accounting.view"):
         permission_id = bind.execute(sa.select(permissions.c.id).where(permissions.c.key == key)).scalar()
         if permission_id is None:
             permission_id = str(uuid.uuid4())
             bind.execute(sa.insert(permissions).values(id=permission_id, key=key, description=f"Permission: {key}"))
-        for role_id in bind.execute(sa.select(roles.c.id).where(roles.c.name == "Vendor")).scalars():
-            exists = bind.execute(sa.select(role_permissions.c.role_id).where(role_permissions.c.role_id == role_id, role_permissions.c.permission_id == permission_id)).scalar()
-            if exists is None:
-                bind.execute(sa.insert(role_permissions).values(role_id=role_id, permission_id=permission_id))
     listing = sa.table("product_channel_listings", sa.column("id", sa.String), sa.column("company_id", sa.String), sa.column("product_id", sa.String), sa.column("vendor_id", sa.String), sa.column("channel", sa.String), sa.column("listing_status", sa.String), sa.column("sync_status", sa.String), sa.column("metadata", sa.JSON))
     mappings = bind.execute(sa.text("SELECT company_id, internal_resource_id FROM external_resource_map WHERE connector = 'woocommerce' AND internal_resource_type = 'product'"))
     for company_id, product_id in mappings:
