@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError, fetchApi } from "@/lib/api";
 import styles from "./commerce.module.css";
@@ -38,8 +39,10 @@ function completionMessage(run: SyncRun): { message: string; warning: boolean } 
     + (stats.failed_taxonomies || 0);
   const pending = (stats.pending_product_pushes || 0) + (stats.pending_media_pushes || 0);
   if (failed || pending) {
+    const failedImages = stats.failed_media_pushes || 0;
+    const imageDetail = failedImages ? ` (${failedImages} product image ${failedImages === 1 ? "sync" : "syncs"})` : "";
     return {
-      message: `Sync finished with ${failed} failed and ${pending} pending item(s). Review sync history for details.`,
+      message: `Sync finished with ${failed} failed${imageDetail} and ${pending} pending item(s). Open WooCommerce diagnostics to see the reason and retry safely.`,
       warning: true,
     };
   }
@@ -139,6 +142,9 @@ export default function SyncActions() {
       </div>}
       {message && <div className={styles.notice} role="status">{message}</div>}
       {error && <div className={styles.error} role="alert">{error}</div>}
+      {error && canSync && <div className={styles.formActions}>
+        <Link className={styles.secondaryButton} href="/admin/woocommerce">Open WooCommerce diagnostics</Link>
+      </div>}
     </section>
   );
 }
