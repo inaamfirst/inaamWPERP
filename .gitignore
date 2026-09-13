@@ -22,3 +22,9 @@ runtime_data/
 
 # Per-PC deployment settings are deliberately never committed.
 scripts/deploy-production.local.psd1
+
+# Local deployment launchers, notes, and archives stay on the developer PC.
+/DEPLOY_TO_PRODUCTION.bat
+/Run Manualy - DEPLOY_TO_PRODUCTION*.txt
+Tree.txt
+*.rar

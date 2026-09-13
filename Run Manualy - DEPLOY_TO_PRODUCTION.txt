@@ -1,1 +1,0 @@
-.\DEPLOY_TO_PRODUCTION.bat "Deploy vendor POS changes"

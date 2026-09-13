@@ -41,13 +41,40 @@ export default function VendorPos() {
   const [supplierForm, setSupplierForm] = useState({ id: "", name: "", phone: "", contactName: "" });
 
   async function loadShop() {
-    const [catalog, supplierRows, purchaseRows, saleRows, categoryRows] = await Promise.all([
-      fetchApi("/commerce/vendor/shop/catalog"), fetchApi("/commerce/vendor/shop/suppliers"),
-      fetchApi("/commerce/vendor/shop/purchases"), fetchApi("/commerce/vendor/shop/sales"), fetchApi("/vendor/catalog/categories"),
+    let catalog: Product[] = [];
+    try {
+      catalog = await fetchApi("/commerce/vendor/shop/catalog") as Product[];
+    } catch {
+      // Keep the POS usable during a rolling deployment where the new shop
+      // catalog route may not be live yet. The legacy vendor catalog still
+      // enforces vendor ownership; stock is refreshed once the new route is available.
+      try {
+        const legacy = await fetchApi("/vendor/catalog/products") as Array<Partial<Product>>;
+        catalog = legacy.map((product) => ({
+          id: product.id || "",
+          name: product.name || "Unnamed product",
+          sku: product.sku,
+          barcode: product.barcode,
+          regular_price_minor: product.regular_price_minor || 0,
+          sale_price_minor: product.sale_price_minor,
+          stock_quantity: Number(product.stock_quantity || 0),
+          low_stock: Number(product.stock_quantity || 0) <= 5,
+          online_status: "private",
+        }));
+      } catch {
+        throw new Error("Products could not be loaded.");
+      }
+    }
+    const optional = async <T,>(endpoint: string, fallback: T): Promise<T> => {
+      try { return await fetchApi(endpoint) as T; } catch { return fallback; }
+    };
+    const [supplierRows, purchaseRows, saleRows, categoryRows] = await Promise.all([
+      optional<Supplier[]>("/commerce/vendor/shop/suppliers", []),
+      optional<Purchase[]>("/commerce/vendor/shop/purchases", []),
+      optional<Sale[]>("/commerce/vendor/shop/sales", []),
+      optional<Category[]>("/vendor/catalog/categories", []),
     ]);
-    setProducts(catalog as Product[]); setSuppliers(supplierRows as Supplier[]);
-    setPurchases(purchaseRows as Purchase[]); setSales(saleRows as Sale[]);
-    setCategories(categoryRows as Category[]);
+    setProducts(catalog); setSuppliers(supplierRows); setPurchases(purchaseRows); setSales(saleRows); setCategories(categoryRows);
   }
   useEffect(() => { loadShop().catch(() => setError("Shop could not be loaded. Please refresh and try again.")); }, []);
 
