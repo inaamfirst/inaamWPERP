@@ -215,14 +215,21 @@ def enqueue_order_event(
 
 
 def enqueue_order_created(db: Session, *, company_id: str, order: Order) -> list[PushNotification]:
+    is_pos_sale = order.sales_channel == "pos" or order.order_source == "pos"
+    title = "New POS sale" if is_pos_sale else "New order"
+    body = (
+        f"POS sale {order.order_number} is complete."
+        if is_pos_sale
+        else f"New order {order.order_number} is ready for review."
+    )
     return enqueue_order_event(
         db,
         company_id=company_id,
         order_id=order.id,
         event_type="order_created",
         event_key=f"order-created:{order.id}",
-        title="New order",
-        body=f"New order {order.order_number} is ready for review.",
+        title=title,
+        body=body,
     )
 
 

@@ -1,6 +1,13 @@
 import { fetchApi } from "./api";
 
-export type PushConfig = { enabled: boolean; public_key: string | null };
+export type PushConfig = {
+  enabled: boolean;
+  public_key: string | null;
+  worker_available: boolean;
+  worker_status: string | null;
+  worker_updated_at: string | null;
+  readiness_detail: string | null;
+};
 export type PushSubscriptionRecord = {
   id: string;
   endpoint: string;

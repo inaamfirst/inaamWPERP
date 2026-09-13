@@ -10,6 +10,7 @@ import {
   isPushSupported,
   sendPushTest,
   type PushSubscriptionRecord,
+  type PushConfig,
 } from "@/lib/push";
 import styles from "./commerce.module.css";
 
@@ -17,6 +18,7 @@ export default function PushNotificationSettings() {
   const { permissions } = useAuth();
   const [enabled, setEnabled] = useState(false);
   const [subscriptions, setSubscriptions] = useState<PushSubscriptionRecord[]>([]);
+  const [config, setConfig] = useState<PushConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -25,6 +27,7 @@ export default function PushNotificationSettings() {
     if (!isPushSupported()) return;
     try {
       const [config, records] = await Promise.all([getPushConfig(), getPushSubscriptions()]);
+      setConfig(config);
       setEnabled(config.enabled);
       setSubscriptions(records.filter((record) => record.is_active));
     } catch (caught) {
@@ -73,8 +76,12 @@ export default function PushNotificationSettings() {
     <section className={styles.panel} aria-labelledby="push-settings-title">
       <h2 className={styles.panelTitle} id="push-settings-title">Browser notifications</h2>
       <p className={styles.muted}>
-        {enabled ? `${subscriptions.length} active browser subscription${subscriptions.length === 1 ? "" : "s"}.` : "Push notifications are not configured on this server."}
+        {enabled ? `${subscriptions.length} active browser subscription${subscriptions.length === 1 ? "" : "s"}. New orders are sent according to your account access.` : "Push notifications are not configured on this server."}
       </p>
+      {enabled && <p className={styles.muted}>Administrators receive every new order. Vendors receive only orders containing their own products.</p>}
+      {config?.readiness_detail && <p className={config.worker_available || !enabled ? styles.muted : styles.error}>
+        {config.readiness_detail}{config.worker_updated_at ? ` Last worker update: ${new Date(config.worker_updated_at).toLocaleString()}.` : ""}
+      </p>}
       {error && <div className={styles.error} role="alert">{error}</div>}
       {message && <div className={styles.notice} role="status">{message}</div>}
       {enabled && <div className={styles.formActions}>

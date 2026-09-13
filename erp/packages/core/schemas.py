@@ -299,6 +299,10 @@ class PushSubscriptionOut(BaseModel):
 class PushConfigOut(BaseModel):
     enabled: bool
     public_key: str | None
+    worker_available: bool = False
+    worker_status: str | None = None
+    worker_updated_at: str | None = None
+    readiness_detail: str | None = None
 
 
 class PushNotificationOut(BaseModel):
@@ -1702,6 +1706,23 @@ class WooCommerceConnectionTestOut(BaseModel):
     video_plugin_compatible: bool = False
     video_plugin_version: str | None = None
     wordpress_max_upload_bytes: int | None = None
+
+
+class WooCommerceMediaSyncOut(BaseModel):
+    id: str
+    product_id: str
+    product_name: str
+    sku: str | None = None
+    status: str
+    attempts: int
+    next_attempt_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WooCommerceMediaRetryOut(BaseModel):
+    queued_products: int
 
 
 class WhatsAppTemplateCreate(BaseModel):

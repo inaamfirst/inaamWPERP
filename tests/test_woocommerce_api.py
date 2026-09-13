@@ -253,6 +253,82 @@ def configure_store(
     assert response.status_code == 200
 
 
+def test_admin_can_inspect_and_retry_failed_product_media_sync(
+    harness: ApiHarness,
+) -> None:
+    token, company_id = complete_first_use_setup(harness.client)
+    headers = bearer(token)
+    with harness.session_factory() as db:
+        product = Product(
+            company_id=company_id,
+            name="Retry Image Product",
+            slug="retry-image-product",
+            sku="ERP-RETRY-IMAGE",
+            product_type="simple",
+            status="active",
+            metadata_json={},
+        )
+        db.add(product)
+        db.flush()
+        db.add(
+            ProductImage(
+                company_id=company_id,
+                product_id=product.id,
+                url="/media/products/missing-image.png",
+                name="missing-image.png",
+                sync_status="pending_add",
+            )
+        )
+        failed = SyncOutbox(
+            company_id=company_id,
+            connector="woocommerce",
+            operation="push_media",
+            resource_type="product",
+            resource_id=product.id,
+            payload={"images": []},
+            idempotency_key="woocommerce:test:failed-media-retry",
+            status="failed",
+            attempts=2,
+            last_error="WordPress password=secret-value failed while uploading image.",
+        )
+        db.add(failed)
+        db.commit()
+        product_id = product.id
+        failed_id = failed.id
+
+    failures = harness.client.get(
+        "/api/v1/woocommerce/media-sync-failures", headers=headers
+    )
+    assert failures.status_code == 200
+    row = failures.json()[0]
+    assert row["id"] == failed_id
+    assert row["product_id"] == product_id
+    assert row["product_name"] == "Retry Image Product"
+    assert "secret-value" not in (row["last_error"] or "")
+    assert "[redacted]" in (row["last_error"] or "")
+
+    retried = harness.client.post(
+        f"/api/v1/woocommerce/media-sync-failures/{product_id}/retry",
+        headers=headers,
+    )
+    assert retried.status_code == 202
+    assert retried.json()["queued_products"] == 1
+
+    with harness.session_factory() as db:
+        stale = db.get(SyncOutbox, failed_id)
+        assert stale is not None
+        assert stale.status == "synced"
+        current = db.scalars(
+            select(SyncOutbox).where(
+                SyncOutbox.company_id == company_id,
+                SyncOutbox.operation == "push_media",
+                SyncOutbox.resource_id == product_id,
+                SyncOutbox.status == "pending",
+            )
+        ).all()
+        assert len(current) == 1
+
+
 def test_product_video_manifest_preserves_external_video_order(harness: ApiHarness) -> None:
     _token, company_id = complete_first_use_setup(harness.client)
     with harness.session_factory() as db:

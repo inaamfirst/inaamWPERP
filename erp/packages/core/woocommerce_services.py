@@ -5,6 +5,7 @@ import json as jsonlib
 import logging
 import mimetypes
 import random
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -2099,6 +2100,159 @@ def enqueue_product_media_sync(
             f"{CONNECTOR}:{scoped_company_id}:push_media:product:{product.id}:{payload_hash}"
         ),
     )
+
+
+def _safe_media_sync_error(value: str | None) -> str | None:
+    """Return actionable outbox diagnostics without leaking connector secrets."""
+    if not value:
+        return None
+    message = str(value).replace("\n", " ").strip()
+    message = re.sub(
+        r"(?i)(authorization|password|secret|token|consumer_secret)\s*([:=])\s*[^\s,;&]+",
+        r"\1\2[redacted]",
+        message,
+    )
+    message = re.sub(
+        r"(?i)(https?://)[^\s/@:]+:[^\s/@]+@",
+        r"\1[redacted]@",
+        message,
+    )
+    message = re.sub(
+        r"(?i)(consumer_secret|password|secret|token)=([^&\s]+)",
+        r"\1=[redacted]",
+        message,
+    )
+    return message[:2000] or None
+
+
+def list_failed_product_media_syncs(
+    db: Session, *, company_id: str | None
+) -> list[dict[str, object]]:
+    """List failed product-media outbox work for an administrator dashboard."""
+    scoped_company_id = require_company_id(company_id)
+    records = db.scalars(
+        select(SyncOutbox)
+        .where(
+            SyncOutbox.company_id == scoped_company_id,
+            SyncOutbox.connector == CONNECTOR,
+            SyncOutbox.resource_type == "product",
+            SyncOutbox.operation == "push_media",
+            SyncOutbox.status == "failed",
+        )
+        .order_by(SyncOutbox.updated_at.desc(), SyncOutbox.created_at.desc())
+    ).all()
+    rows: list[dict[str, object]] = []
+    for record in records:
+        if not record.resource_id:
+            continue
+        product = db.scalar(
+            select(Product).where(
+                Product.company_id == scoped_company_id,
+                Product.id == record.resource_id,
+            )
+        )
+        if product is None:
+            continue
+        rows.append(
+            {
+                "id": record.id,
+                "product_id": product.id,
+                "product_name": product.name,
+                "sku": product.sku,
+                "status": record.status,
+                "attempts": record.attempts,
+                "next_attempt_at": record.next_attempt_at,
+                "last_error": _safe_media_sync_error(record.last_error),
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+            }
+        )
+    return rows
+
+
+def retry_failed_product_media_sync(
+    db: Session,
+    *,
+    company_id: str | None,
+    user_id: str,
+    product_id: str,
+) -> SyncOutbox:
+    """Requeue one product's current media state without duplicating old work."""
+    scoped_company_id = require_company_id(company_id)
+    product = db.scalar(
+        select(Product).where(
+            Product.company_id == scoped_company_id,
+            Product.id == product_id,
+        )
+    )
+    if product is None:
+        raise ServiceError(404, "Product not found.")
+
+    # Queue the product first so an interrupted product creation is safely
+    # recovered before the media operation attempts to attach image IDs.
+    enqueue_product_sync(db, company_id=scoped_company_id, product=product)
+    current = enqueue_product_media_sync(db, company_id=scoped_company_id, product=product)
+    stale = db.scalars(
+        select(SyncOutbox).where(
+            SyncOutbox.company_id == scoped_company_id,
+            SyncOutbox.connector == CONNECTOR,
+            SyncOutbox.resource_type == "product",
+            SyncOutbox.operation == "push_media",
+            SyncOutbox.resource_id == product.id,
+            SyncOutbox.status == "failed",
+            SyncOutbox.id != current.id,
+        )
+    ).all()
+    for record in stale:
+        record.status = "synced"
+        record.last_error = None
+        record.next_attempt_at = None
+    db.flush()
+    record_audit(
+        db,
+        action="woocommerce.product_media_retry_queued",
+        company_id=scoped_company_id,
+        user_id=user_id,
+        entity_type="product",
+        entity_id=product.id,
+        metadata={"media_outbox_id": current.id, "superseded_failures": len(stale)},
+    )
+    return current
+
+
+def retry_all_failed_product_media_syncs(
+    db: Session, *, company_id: str | None, user_id: str
+) -> int:
+    scoped_company_id = require_company_id(company_id)
+    product_ids = {
+        str(product_id)
+        for product_id in db.scalars(
+            select(SyncOutbox.resource_id).where(
+                SyncOutbox.company_id == scoped_company_id,
+                SyncOutbox.connector == CONNECTOR,
+                SyncOutbox.resource_type == "product",
+                SyncOutbox.operation == "push_media",
+                SyncOutbox.status == "failed",
+                SyncOutbox.resource_id.is_not(None),
+            )
+        ).all()
+        if product_id
+    }
+    queued = 0
+    for product_id in product_ids:
+        try:
+            retry_failed_product_media_sync(
+                db,
+                company_id=scoped_company_id,
+                user_id=user_id,
+                product_id=product_id,
+            )
+        except ServiceError as exc:
+            if exc.status_code != 404:
+                raise
+        else:
+            queued += 1
+    return queued
 
 
 def enqueue_product_video_sync(

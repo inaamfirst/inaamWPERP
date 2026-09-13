@@ -11,6 +11,7 @@ from erp.packages.core.api.dependencies import (
     service_error_to_http,
 )
 from erp.packages.core.config import get_settings
+from erp.packages.core.production_services import read_worker_heartbeat
 from erp.packages.core.push_services import (
     delete_subscription,
     enqueue_test_notification,
@@ -37,9 +38,23 @@ PushContext = Annotated[
 @router.get("/push/config", response_model=PushConfigOut, tags=["push"])
 def push_config(context: CurrentContext) -> PushConfigOut:
     settings = get_settings()
+    heartbeat = read_worker_heartbeat()
+    enabled = bool(context.user.company_id and settings.effective_push_enabled)
+    worker_status = str(heartbeat.get("status")) if heartbeat and heartbeat.get("status") else None
+    worker_updated_at = str(heartbeat.get("updated_at")) if heartbeat and heartbeat.get("updated_at") else None
+    if not enabled:
+        detail = "Browser push needs ERP_PUSH_ENABLED and valid VAPID keys on the server."
+    elif heartbeat is None:
+        detail = "The ERP worker heartbeat is missing. Start the worker to deliver queued notifications."
+    else:
+        detail = f"Worker is {worker_status or 'active'} and can deliver queued notifications."
     return PushConfigOut(
-        enabled=bool(context.user.company_id and settings.effective_push_enabled),
+        enabled=enabled,
         public_key=settings.push_vapid_public_key if settings.effective_push_enabled else None,
+        worker_available=heartbeat is not None,
+        worker_status=worker_status,
+        worker_updated_at=worker_updated_at,
+        readiness_detail=detail,
     )
 
 

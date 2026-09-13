@@ -236,6 +236,8 @@ from erp.packages.core.schemas import (
     StockMovementOut,
     SyncConflictOut,
     SyncConflictResolveRequest,
+    WooCommerceMediaRetryOut,
+    WooCommerceMediaSyncOut,
     SyncRunLogOut,
     UserCreate,
     UserOut,
@@ -301,10 +303,13 @@ from erp.packages.core.woocommerce_services import (
     enqueue_product_sync,
     enqueue_product_video_sync,
     enqueue_woocommerce_sync_run,
+    list_failed_product_media_syncs,
     list_sync_conflicts,
     list_sync_runs,
     load_woocommerce_config,
     process_webhook_event,
+    retry_all_failed_product_media_syncs,
+    retry_failed_product_media_sync,
     resolve_sync_conflict,
     saved_wordpress_video_plugin_status,
     test_woocommerce_connection,
@@ -2939,6 +2944,79 @@ def woocommerce_sync_runs_list(
             for log in list_sync_runs(db, context.user.company_id, vendor_id=vendor_id)
         ]
     except ServiceError as exc:
+        raise service_error_to_http(exc) from exc
+
+
+@router.get(
+    "/woocommerce/media-sync-failures",
+    response_model=list[WooCommerceMediaSyncOut],
+    tags=["woocommerce"],
+)
+def woocommerce_media_sync_failures(
+    context: WooCommerceViewContext,
+    db: DbSession,
+) -> list[WooCommerceMediaSyncOut]:
+    try:
+        return [
+            WooCommerceMediaSyncOut.model_validate(row)
+            for row in list_failed_product_media_syncs(
+                db, company_id=context.user.company_id
+            )
+        ]
+    except ServiceError as exc:
+        raise service_error_to_http(exc) from exc
+
+
+@router.post(
+    "/woocommerce/media-sync-failures/{product_id}/retry",
+    response_model=WooCommerceMediaRetryOut,
+    status_code=202,
+    tags=["woocommerce"],
+)
+def woocommerce_media_sync_failure_retry(
+    product_id: str,
+    context: WooCommerceSyncContext,
+    db: DbSession,
+) -> WooCommerceMediaRetryOut:
+    try:
+        retry_failed_product_media_sync(
+            db,
+            company_id=context.user.company_id,
+            user_id=context.user.id,
+            product_id=product_id,
+        )
+        enqueue_woocommerce_sync_run(db, company_id=context.user.company_id, sync_mode="outbox")
+        db.commit()
+        return WooCommerceMediaRetryOut(queued_products=1)
+    except ServiceError as exc:
+        db.rollback()
+        raise service_error_to_http(exc) from exc
+
+
+@router.post(
+    "/woocommerce/media-sync-failures/retry-all",
+    response_model=WooCommerceMediaRetryOut,
+    status_code=202,
+    tags=["woocommerce"],
+)
+def woocommerce_media_sync_failures_retry_all(
+    context: WooCommerceSyncContext,
+    db: DbSession,
+) -> WooCommerceMediaRetryOut:
+    try:
+        queued = retry_all_failed_product_media_syncs(
+            db,
+            company_id=context.user.company_id,
+            user_id=context.user.id,
+        )
+        if queued:
+            enqueue_woocommerce_sync_run(
+                db, company_id=context.user.company_id, sync_mode="outbox"
+            )
+        db.commit()
+        return WooCommerceMediaRetryOut(queued_products=queued)
+    except ServiceError as exc:
+        db.rollback()
         raise service_error_to_http(exc) from exc
 
 

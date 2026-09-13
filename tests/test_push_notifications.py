@@ -153,6 +153,29 @@ def test_order_fanout_is_scoped_and_idempotent(tmp_path: Path, monkeypatch) -> N
         assert len(list(db.scalars(select(PushNotification)).all())) == 3
 
 
+def test_completed_pos_sale_uses_the_same_scoped_order_fanout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from erp.packages.core import push_services
+
+    monkeypatch.setattr(push_services, "get_settings", lambda: PushSettings())
+    factory = make_session(tmp_path)
+    with factory() as db:
+        company, order, users = seed_order(db)
+        order.sales_channel = "pos"
+        order.order_source = "pos"
+        enqueue_order_created(db, company_id=company.id, order=order)
+        db.flush()
+        rows = list(db.scalars(select(PushNotification)).all())
+        # POS sales are still orders: all admins and only the involved vendors
+        # are notified, never unrelated vendor accounts.
+        assert {row.recipient_user_id for row in rows} == {user.id for user in users}
+        assert {row.vendor_id for row in rows if row.vendor_id} == {
+            item.vendor_id for item in db.scalars(select(OrderItem)).all() if item.vendor_id
+        }
+        assert {row.title for row in rows} == {"New POS sale"}
+
+
 def test_subscription_registration_and_delivery(tmp_path: Path, monkeypatch) -> None:
     from erp.packages.core import push_services
 
