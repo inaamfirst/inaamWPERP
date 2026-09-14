@@ -1115,6 +1115,35 @@ def test_woocommerce_connection_failures_are_mocked(
     assert network_response.json()["status"] == "network_error"
 
 
+def test_remote_request_retries_over_ipv4_after_unreachable_ipv6_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://ipv6-unreachable.example.test/wp-json/wc/v3/products"
+    origin = "https://ipv6-unreachable.example.test"
+    woocommerce_services._REMOTE_FORCE_IPV4_ORIGINS.discard(origin)
+    normal_calls: list[str] = []
+    ipv4_calls: list[str] = []
+
+    def unreachable_request(method: str, request_url: str, **_kwargs: object) -> httpx.Response:
+        normal_calls.append(f"{method}:{request_url}")
+        raise httpx.ConnectError("[Errno 101] Network is unreachable")
+
+    def ipv4_request(method: str, request_url: str, **_kwargs: object) -> httpx.Response:
+        ipv4_calls.append(f"{method}:{request_url}")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(httpx, "request", unreachable_request)
+    monkeypatch.setattr(woocommerce_services, "_remote_request_over_ipv4", ipv4_request)
+
+    response = woocommerce_services._remote_request_with_retry("GET", url, timeout=1.0)
+
+    assert response.status_code == 200
+    assert normal_calls == [f"GET:{url}"]
+    assert ipv4_calls == [f"GET:{url}"]
+    assert origin in woocommerce_services._REMOTE_FORCE_IPV4_ORIGINS
+    woocommerce_services._REMOTE_FORCE_IPV4_ORIGINS.discard(origin)
+
+
 def test_woocommerce_connection_retries_query_auth_when_basic_auth_fails(
     harness: ApiHarness,
     monkeypatch: pytest.MonkeyPatch,

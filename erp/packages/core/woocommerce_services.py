@@ -99,6 +99,10 @@ WOOCOMMERCE_TIMESTAMP_OVERLAP = timedelta(seconds=1)
 
 _REMOTE_REQUEST_PACING_LOCK = threading.Lock()
 _REMOTE_REQUEST_NEXT_ALLOWED_AT: dict[str, float] = {}
+# Some production hosts have an IPv6 DNS result for a store but no IPv6 route.
+# Remembering the IPv4 fallback per origin avoids making every subsequent
+# WooCommerce request wait for the same failed IPv6 connection attempt.
+_REMOTE_FORCE_IPV4_ORIGINS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -411,6 +415,27 @@ def _pace_remote_request(url: str) -> None:
         _REMOTE_REQUEST_NEXT_ALLOWED_AT[origin] = time.monotonic() + REMOTE_REQUEST_INTERVAL_SECONDS
 
 
+def _remote_origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _is_unreachable_network_error(exc: httpx.RequestError) -> bool:
+    """Return true only for a missing network route, commonly IPv6-only DNS."""
+    detail = str(exc).lower()
+    return "network is unreachable" in detail or "errno 101" in detail
+
+
+def _remote_request_over_ipv4(method: str, url: str, **kwargs: object) -> httpx.Response:
+    """Repeat one request over IPv4 while retaining the HTTPS hostname/SNI."""
+    # Binding the outbound socket to an IPv4 wildcard address makes httpx use
+    # the A record without replacing the hostname in the URL.  The latter
+    # would break TLS certificate validation and WordPress virtual hosts.
+    transport = httpx.HTTPTransport(local_address="0.0.0.0")
+    with httpx.Client(transport=transport) as client:
+        return client.request(method, url, **kwargs)
+
+
 def _remote_request_with_retry(
     method: str,
     url: str,
@@ -424,13 +449,26 @@ def _remote_request_with_retry(
     """
 
     last_request_error: httpx.RequestError | None = None
+    origin = _remote_origin(url)
+    force_ipv4 = origin in _REMOTE_FORCE_IPV4_ORIGINS
     for attempt in range(REMOTE_RETRY_ATTEMPTS):
         try:
             _pace_remote_request(url)
-            response = httpx.request(method, url, **kwargs)
+            response = (
+                _remote_request_over_ipv4(method, url, **kwargs)
+                if force_ipv4
+                else httpx.request(method, url, **kwargs)
+            )
         except httpx.RequestError as exc:
             last_request_error = exc
             response = None
+            if not force_ipv4 and _is_unreachable_network_error(exc):
+                force_ipv4 = True
+                _REMOTE_FORCE_IPV4_ORIGINS.add(origin)
+                LOGGER.warning(
+                    "WooCommerce host %s has no usable default network route; retrying over IPv4.",
+                    urlparse(url).netloc,
+                )
         # Retrying a rate limit immediately only worsens the remote block. The
         # durable run scheduler receives the 429 and defers it instead.
         if response is not None and response.status_code == 429:
