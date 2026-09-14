@@ -80,7 +80,8 @@ if ($StageSafeChanges) {
 
 & git diff --cached --quiet
 if ($LASTEXITCODE -eq 0) {
-    throw "Nothing is staged. Review changes, stage the intended source files, then run this command again."
+    Write-Host "No deployable source changes detected. Production was not changed." -ForegroundColor Yellow
+    exit 0
 }
 
 if (-not $SkipTests) {
