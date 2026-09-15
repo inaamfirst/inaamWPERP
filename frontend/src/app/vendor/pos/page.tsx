@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchApi } from "@/lib/api";
 import styles from "@/components/commerce.module.css";
 
 type Product = { id: string; name: string; sku?: string | null; barcode?: string | null; regular_price_minor: number; sale_price_minor?: number | null; stock_quantity: number; low_stock?: boolean; online_status?: string };
 type CartItem = Product & { quantity: number };
 type Supplier = { id: string; name: string; phone?: string | null; contact_name?: string | null; outstanding_minor?: number };
-type Category = { id: string; name: string };
+type Reference = { id: string; name: string };
 type Purchase = { id: string; purchase_number: string; total_minor: number; paid_minor: number; payment_status: string; created_at: string };
 type Sale = { id: string; bill_number: string; created_at: string; customer: string; total_minor: number; payment_method: string; payment_status: string; status: string };
 type Receipt = { id: string; order_number: string; total_minor: number };
@@ -16,10 +16,96 @@ type Modal = "new-product" | "receive-stock" | "suppliers" | "purchases" | "sale
 const money = (minor: number) => `PKR ${(minor / 100).toFixed(2)}`;
 const toMinor = (value: string) => Math.max(0, Math.round(Number(value || 0) * 100));
 
+function ReferencePicker({
+  label,
+  searchLabel,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  searchLabel: string;
+  options: Reference[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const selected = options.find((item) => item.id === value);
+  const matches = useMemo(() => {
+    const term = query.trim().toLocaleLowerCase();
+    return term ? options.filter((item) => item.name.toLocaleLowerCase().includes(term)) : options;
+  }, [options, query]);
+  const choices = ["", ...matches.map((item) => item.id)];
+  const listId = `${label.toLowerCase().replaceAll(" ", "-")}-choices`;
+
+  useEffect(() => {
+    function closeWhenOutside(event: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", closeWhenOutside);
+    return () => document.removeEventListener("pointerdown", closeWhenOutside);
+  }, []);
+
+  useEffect(() => { setActiveIndex(0); }, [query, open]);
+
+  function select(nextValue: string) {
+    onChange(nextValue);
+    setQuery("");
+    setOpen(false);
+  }
+
+  function keyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") { setOpen(false); return; }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.min(current + 1, choices.length - 1));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+    if (event.key === "Enter" && open) {
+      event.preventDefault();
+      select(choices[activeIndex] || "");
+    }
+  }
+
+  return <div className={styles.posReferencePicker} ref={rootRef}>
+    <span className={styles.posReferenceLabel}>{label} (optional)</span>
+    {selected && <div className={styles.posReferenceSelected}><span>{selected.name}</span><button type="button" onClick={() => select("")}>Clear</button></div>}
+    <input
+      value={query}
+      role="combobox"
+      aria-label={`${searchLabel}. ${selected ? `Selected: ${selected.name}.` : ""}`}
+      aria-autocomplete="list"
+      aria-controls={listId}
+      aria-expanded={open}
+      aria-activedescendant={open ? `${listId}-${activeIndex}` : undefined}
+      placeholder={searchLabel}
+      onFocus={() => setOpen(true)}
+      onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+      onKeyDown={keyDown}
+    />
+    {open && <div className={styles.posReferenceOptions} id={listId} role="listbox" aria-label={label}>
+      <button id={`${listId}-0`} type="button" role="option" aria-selected={!value} className={activeIndex === 0 ? styles.posReferenceActive : ""} onMouseEnter={() => setActiveIndex(0)} onClick={() => select("")}>No {label.toLowerCase()}</button>
+      {matches.map((item, index) => <button id={`${listId}-${index + 1}`} key={item.id} type="button" role="option" aria-selected={value === item.id} className={activeIndex === index + 1 ? styles.posReferenceActive : ""} onMouseEnter={() => setActiveIndex(index + 1)} onClick={() => select(item.id)}>{item.name}</button>)}
+      {matches.length === 0 && <p className={styles.posReferenceEmpty}>No {label.toLowerCase()} found.</p>}
+    </div>}
+  </div>;
+}
+
 export default function VendorPos() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [categories, setCategories] = useState<Reference[]>([]);
+  const [brands, setBrands] = useState<Reference[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -36,7 +122,7 @@ export default function VendorPos() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
-  const [newProduct, setNewProduct] = useState({ name: "", price: "", sku: "", stock: "", cost: "", category: "" });
+  const [newProduct, setNewProduct] = useState({ name: "", price: "", sku: "", stock: "", cost: "", category: "", brand: "" });
   const [receive, setReceive] = useState({ productId: "", quantity: "", cost: "", supplierId: "", paymentStatus: "paid", payment: "", notes: "" });
   const [supplierForm, setSupplierForm] = useState({ id: "", name: "", phone: "", contactName: "" });
 
@@ -68,13 +154,14 @@ export default function VendorPos() {
     const optional = async <T,>(endpoint: string, fallback: T): Promise<T> => {
       try { return await fetchApi(endpoint) as T; } catch { return fallback; }
     };
-    const [supplierRows, purchaseRows, saleRows, categoryRows] = await Promise.all([
+    const [supplierRows, purchaseRows, saleRows, categoryRows, brandRows] = await Promise.all([
       optional<Supplier[]>("/commerce/vendor/shop/suppliers", []),
       optional<Purchase[]>("/commerce/vendor/shop/purchases", []),
       optional<Sale[]>("/commerce/vendor/shop/sales", []),
-      optional<Category[]>("/vendor/catalog/categories", []),
+      optional<Reference[]>("/vendor/catalog/categories", []),
+      optional<Reference[]>("/vendor/catalog/brands", []),
     ]);
-    setProducts(catalog); setSuppliers(supplierRows); setPurchases(purchaseRows); setSales(saleRows); setCategories(categoryRows);
+    setProducts(catalog); setSuppliers(supplierRows); setPurchases(purchaseRows); setSales(saleRows); setCategories(categoryRows); setBrands(brandRows);
   }
   useEffect(() => { loadShop().catch(() => setError("Shop could not be loaded. Please refresh and try again.")); }, []);
 
@@ -121,9 +208,9 @@ export default function VendorPos() {
   async function createProduct(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const created = await fetchApi("/vendor/catalog/products", { method: "POST", body: JSON.stringify({ name: newProduct.name, regular_price_minor: toMinor(newProduct.price), sku: newProduct.sku || null, barcode: newProduct.sku || null, category_id: newProduct.category || null, manage_stock: true, stock_status: "instock", visibility: "visible", metadata: newProduct.cost ? { purchase_cost_minor: toMinor(newProduct.cost) } : {} }) }) as { id: string };
+      const created = await fetchApi("/vendor/catalog/products", { method: "POST", body: JSON.stringify({ name: newProduct.name, regular_price_minor: toMinor(newProduct.price), sku: newProduct.sku || null, barcode: newProduct.sku || null, category_id: newProduct.category || null, brand_id: newProduct.brand || null, manage_stock: true, stock_status: "instock", visibility: "visible", metadata: newProduct.cost ? { purchase_cost_minor: toMinor(newProduct.cost) } : {} }) }) as { id: string };
       if (Number(newProduct.stock) > 0) await fetchApi("/commerce/vendor/shop/stock-in", { method: "POST", body: JSON.stringify({ product_id: created.id, quantity: Number(newProduct.stock), reason: "Opening shop stock" }) });
-      setMessage("Product added to your shop. It is private online until you publish it."); setNewProduct({ name: "", price: "", sku: "", stock: "", cost: "", category: "" }); setModal(null); await loadShop();
+      setMessage("Product added to your shop. It is private online until you publish it."); setNewProduct({ name: "", price: "", sku: "", stock: "", cost: "", category: "", brand: "" }); setModal(null); await loadShop();
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Product could not be added."); } finally { setBusy(false); }
   }
 
@@ -153,7 +240,7 @@ export default function VendorPos() {
     </div><div className={styles.posMobileBar}><span>{cart.reduce((sum, item) => sum + item.quantity, 0)} items - {money(total)}</span><button className={styles.posCompleteButton} disabled={!cart.length} onClick={completeSale}>Complete Sale</button></div>
 
     {modal && <div className={styles.posModalBackdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><section className={styles.posModal} role="dialog" aria-modal="true" aria-label={modalTitle}><div className={styles.posModalHeader}><h2>{modalTitle}</h2><button className={styles.posCloseButton} onClick={() => setModal(null)} aria-label="Close">X</button></div>
-      {modal === "new-product" && <form className={styles.posModalBody} onSubmit={createProduct}><label className={styles.posField}>Product name<input required value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} autoFocus /></label><div className={styles.posFormTwo}><label className={styles.posField}>Selling price<input required inputMode="decimal" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} placeholder="0.00" /></label><label className={styles.posField}>Purchase cost (optional)<input inputMode="decimal" value={newProduct.cost} onChange={(event) => setNewProduct({ ...newProduct, cost: event.target.value })} placeholder="0.00" /></label></div><div className={styles.posFormTwo}><label className={styles.posField}>SKU / barcode (optional)<input value={newProduct.sku} onChange={(event) => setNewProduct({ ...newProduct, sku: event.target.value })} /></label><label className={styles.posField}>Category (optional)<select value={newProduct.category} onChange={(event) => setNewProduct({ ...newProduct, category: event.target.value })}><option value="">No category</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div><label className={styles.posField}>Opening stock (optional)<input inputMode="numeric" value={newProduct.stock} onChange={(event) => setNewProduct({ ...newProduct, stock: event.target.value })} /></label><p className={styles.posHint}>This product stays private online until you publish it.</p><div className={styles.posModalActions}><button className={styles.posCompleteButton} disabled={busy}>{busy ? "Saving..." : "Add Product"}</button><a className={styles.posLinkButton} href="/vendor/products">Edit full product</a></div></form>}
+      {modal === "new-product" && <form className={styles.posModalBody} onSubmit={createProduct}><label className={styles.posField}>Product name<input required value={newProduct.name} onChange={(event) => setNewProduct({ ...newProduct, name: event.target.value })} autoFocus /></label><div className={styles.posFormTwo}><label className={styles.posField}>Selling price<input required inputMode="decimal" value={newProduct.price} onChange={(event) => setNewProduct({ ...newProduct, price: event.target.value })} placeholder="0.00" /></label><label className={styles.posField}>Purchase cost (optional)<input inputMode="decimal" value={newProduct.cost} onChange={(event) => setNewProduct({ ...newProduct, cost: event.target.value })} placeholder="0.00" /></label></div><label className={styles.posField}>SKU / barcode (optional)<input value={newProduct.sku} onChange={(event) => setNewProduct({ ...newProduct, sku: event.target.value })} /></label><div className={styles.posFormTwo}><ReferencePicker label="Category" searchLabel="Search categories..." options={categories} value={newProduct.category} onChange={(category) => setNewProduct({ ...newProduct, category })} /><ReferencePicker label="Brand" searchLabel="Search brands..." options={brands} value={newProduct.brand} onChange={(brand) => setNewProduct({ ...newProduct, brand })} /></div><label className={styles.posField}>Opening stock (optional)<input inputMode="numeric" value={newProduct.stock} onChange={(event) => setNewProduct({ ...newProduct, stock: event.target.value })} /></label><p className={styles.posHint}>This product stays private online until you publish it.</p><div className={styles.posModalActions}><button className={styles.posCompleteButton} disabled={busy}>{busy ? "Saving..." : "Add Product"}</button><a className={styles.posLinkButton} href="/vendor/products">Edit full product</a></div></form>}
       {modal === "receive-stock" && <form className={styles.posModalBody} onSubmit={receiveStock}><label className={styles.posField}>Product<select required value={receive.productId} onChange={(event) => setReceive({ ...receive, productId: event.target.value })}><option value="">Choose product</option>{products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label><div className={styles.posFormTwo}><label className={styles.posField}>Quantity<input required type="number" min="1" value={receive.quantity} onChange={(event) => setReceive({ ...receive, quantity: event.target.value })} /></label><label className={styles.posField}>Unit cost<input required inputMode="decimal" value={receive.cost} onChange={(event) => setReceive({ ...receive, cost: event.target.value })} placeholder="0.00" /></label></div><label className={styles.posField}>Supplier<select required value={receive.supplierId} onChange={(event) => setReceive({ ...receive, supplierId: event.target.value })}><option value="">Choose supplier</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label><div className={styles.posPaymentGrid}>{["paid", "partial", "unpaid"].map((status) => <button type="button" key={status} className={`${styles.posPaymentButton} ${receive.paymentStatus === status ? styles.posPaymentSelected : ""}`} onClick={() => setReceive({ ...receive, paymentStatus: status })}>{status[0].toUpperCase() + status.slice(1)}</button>)}</div>{receive.paymentStatus === "partial" && <label className={styles.posField}>Payment amount<input inputMode="decimal" value={receive.payment} onChange={(event) => setReceive({ ...receive, payment: event.target.value })} /></label>}<label className={styles.posField}>Notes<textarea value={receive.notes} onChange={(event) => setReceive({ ...receive, notes: event.target.value })} rows={2} /></label><div className={styles.posModalActions}><button className={styles.posCompleteButton} disabled={busy}>{busy ? "Saving..." : "Receive Stock"}</button></div></form>}
       {modal === "suppliers" && <div className={styles.posModalBody}><form onSubmit={saveSupplier} className={styles.posInlineForm}><input required placeholder="Supplier name" value={supplierForm.name} onChange={(event) => setSupplierForm({ ...supplierForm, name: event.target.value })} /><input placeholder="Phone" value={supplierForm.phone} onChange={(event) => setSupplierForm({ ...supplierForm, phone: event.target.value })} /><button className={styles.posSmallButton}>{supplierForm.id ? "Save" : "Add supplier"}</button></form><div className={styles.posSimpleList}>{suppliers.length === 0 ? <p className={styles.empty}>No suppliers yet.</p> : suppliers.map((supplier) => <div className={styles.posSimpleRow} key={supplier.id}><div><strong>{supplier.name}</strong><span>{supplier.phone || "No phone"}</span><span>Outstanding: {money(supplier.outstanding_minor || 0)}</span></div><button className={styles.posSmallButton} onClick={() => setSupplierForm({ id: supplier.id, name: supplier.name, phone: supplier.phone || "", contactName: supplier.contact_name || "" })}>Edit</button></div>)}</div></div>}
       {modal === "purchases" && <div className={styles.posModalBody}><div className={styles.posSimpleList}>{purchases.length === 0 ? <p className={styles.empty}>No purchases yet.</p> : purchases.map((purchase) => <div className={styles.posSimpleRow} key={purchase.id}><div><strong>{purchase.purchase_number}</strong><span>{new Date(purchase.created_at).toLocaleString()}</span></div><div><strong>{money(purchase.total_minor)}</strong><span>{purchase.payment_status}</span></div></div>)}</div><a className={styles.posLinkButton} href="/vendor/shop">Open full shop reports</a></div>}

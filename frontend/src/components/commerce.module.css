@@ -1288,6 +1288,18 @@
 .posCheckoutForm { display: grid; gap: 12px; }
 .posField { display: grid; gap: 6px; font-weight: 700; font-size: 14px; }
 .posField input, .posField select, .posField textarea, .posInlineForm input { width: 100%; min-height: 46px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 9px 11px; font: inherit; background: #fff; }
+.posReferencePicker { position: relative; display: grid; min-width: 0; gap: 6px; font-size: 14px; }
+.posReferenceLabel { font-weight: 700; }
+.posReferencePicker input { width: 100%; min-height: 46px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 9px 11px; font: inherit; background: #fff; }
+.posReferencePicker input:focus { outline: 3px solid rgba(49, 85, 217, .2); border-color: #3155d9; }
+.posReferenceSelected { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; padding: 6px 8px 6px 10px; border: 1px solid #bfd0ff; border-radius: 9px; background: #eef4ff; color: #163d93; }
+.posReferenceSelected > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.posReferenceSelected button { flex: 0 0 auto; min-height: 30px; border: 0; border-radius: 7px; padding: 4px 8px; background: #dce8ff; color: #163d93; cursor: pointer; font: inherit; font-weight: 700; }
+.posReferenceOptions { position: absolute; z-index: 4; top: 100%; right: 0; left: 0; display: grid; max-height: 240px; overflow-y: auto; margin-top: 4px; padding: 5px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; box-shadow: 0 12px 26px rgba(15, 23, 42, .16); }
+.posReferenceOptions button { width: 100%; min-height: 42px; border: 0; border-radius: 7px; padding: 8px 10px; background: transparent; color: #16223b; cursor: pointer; text-align: left; font: inherit; }
+.posReferenceOptions button[aria-selected="true"] { font-weight: 800; color: #173f9e; }
+.posReferenceOptions button:hover, .posReferenceOptions button:focus-visible, .posReferenceActive { outline: 0; background: #eaf1ff !important; color: #173f9e; }
+.posReferenceEmpty { margin: 4px 6px; color: #596780; font-size: 13px; }
 .posPaymentGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .posPaymentButton { min-height: 48px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; cursor: pointer; font-weight: 800; }
 .posPaymentSelected { color: #fff; background: #3155d9; border-color: #3155d9; }
