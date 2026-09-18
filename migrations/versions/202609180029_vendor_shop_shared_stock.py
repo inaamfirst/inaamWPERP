@@ -6,6 +6,7 @@ Revises: 202609100028
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 import sqlalchemy as sa
@@ -38,6 +39,12 @@ def _audit_once(
     entity_id: str,
     metadata: dict[str, object],
 ) -> None:
+    # AuditLog.entity_id is VARCHAR(120), while a Woo baseline reference can
+    # contain three UUIDs and exceed that limit. Keep a stable, short key for
+    # idempotency and retain the original reference in JSON metadata.
+    if len(entity_id) > 120:
+        metadata = {**metadata, "reference_id": entity_id}
+        entity_id = f"sha256:{hashlib.sha256(entity_id.encode('utf-8')).hexdigest()}"
     exists = bind.execute(
         sa.select(audits.c.id).where(
             audits.c.company_id == company_id,

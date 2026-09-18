@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -705,6 +706,67 @@ def test_vendor_shop_shared_stock_migration_moves_only_remaining_woo_balance_onc
         with engine.connect() as connection:
             count = connection.execute(sa.text("SELECT COUNT(*) FROM stock_movements WHERE reference_type = 'vendor_shop_baseline_transfer'" )).scalar_one()
         assert count == 2
+    finally:
+        engine.dispose()
+
+
+def test_vendor_shop_shared_stock_migration_hashes_long_audit_reference_ids(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    database_url = f"sqlite:///{tmp_path / 'vendor-shop-audit-reference.db'}"
+    cfg = migration_config(root, database_url)
+    command.upgrade(cfg, "202609100028")
+    company_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    product_id = str(uuid.uuid4())
+    variant_id = str(uuid.uuid4())
+    warehouse_id = str(uuid.uuid4())
+    engine = sa.create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text("INSERT INTO companies (id, name, slug, status) VALUES (:id, 'Audit Company', 'audit-company', 'active')"),
+                {"id": company_id},
+            )
+            connection.execute(
+                sa.text("INSERT INTO users (id, company_id, username, password_hash, is_active) VALUES (:id, :company_id, 'audit-user', 'hash', true)"),
+                {"id": user_id, "company_id": company_id},
+            )
+            connection.execute(
+                sa.text("INSERT INTO products (id, company_id, name, slug, status, manage_stock, stock_status, metadata) VALUES (:id, :company_id, 'Audit Product', 'audit-product', 'active', true, 'instock', '{}')"),
+                {"id": product_id, "company_id": company_id},
+            )
+            connection.execute(
+                sa.text("INSERT INTO product_variants (id, company_id, product_id, sku, price_minor, currency, attributes, is_active) VALUES (:id, :company_id, :product_id, 'audit-variant', 0, 'PKR', '{}', true)"),
+                {"id": variant_id, "company_id": company_id, "product_id": product_id},
+            )
+            connection.execute(
+                sa.text("INSERT INTO warehouses (id, company_id, vendor_id, warehouse_type, code, name, is_active) VALUES (:id, :company_id, NULL, 'company', 'WOO', 'WooCommerce', true)"),
+                {"id": warehouse_id, "company_id": company_id},
+            )
+            connection.execute(
+                sa.text("INSERT INTO stock_movements (id, company_id, warehouse_id, product_id, variant_id, movement_type, quantity_delta, reference_type, reference_id, metadata, created_by_id) VALUES (:id, :company_id, :warehouse_id, :product_id, :variant_id, 'opening', 7, 'legacy', 'woo-balance', '{}', :user_id)"),
+                {
+                    "id": str(uuid.uuid4()), "company_id": company_id, "warehouse_id": warehouse_id,
+                    "product_id": product_id, "variant_id": variant_id, "user_id": user_id,
+                },
+            )
+
+        command.upgrade(cfg, "head")
+        expected_reference = f"woo-baseline:{warehouse_id}:{product_id}:{variant_id}"
+        with engine.connect() as connection:
+            audit = connection.execute(
+                sa.text("SELECT entity_id, metadata FROM audit_logs WHERE company_id = :company_id AND action = 'commerce.vendor_stock_reconciliation_ambiguous'"),
+                {"company_id": company_id},
+            ).mappings().one()
+        audit_metadata = audit["metadata"]
+        if isinstance(audit_metadata, str):
+            audit_metadata = json.loads(audit_metadata)
+        assert len(expected_reference) > 120
+        assert audit["entity_id"].startswith("sha256:")
+        assert len(audit["entity_id"]) <= 120
+        assert audit_metadata["reference_id"] == expected_reference
     finally:
         engine.dispose()
 
