@@ -22,7 +22,9 @@ Set-Location $repoRoot
 
 function Invoke-Git {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & git @Arguments
+    # Prevent Git's automatic maintenance from prompting while Windows or
+    # antivirus software has a .git object directory open.
+    & git -c gc.auto=0 @Arguments
     if ($LASTEXITCODE -ne 0) { throw "git $($Arguments -join ' ') failed." }
 }
 
@@ -55,7 +57,7 @@ if ($branch -ne $config.Branch) {
 }
 # Do not let Git's background auto-GC interrupt deployment with Windows file
 # deletion prompts when an editor or antivirus has a .git object open.
-Invoke-Git -c gc.auto=0 fetch origin $config.Branch
+Invoke-Git fetch origin $config.Branch
 $behind = (& git rev-list --count "HEAD..origin/$($config.Branch)").Trim()
 if ([int]$behind -ne 0) {
     throw "Your branch is behind origin/$($config.Branch). Pull/rebase and review it before deployment."
