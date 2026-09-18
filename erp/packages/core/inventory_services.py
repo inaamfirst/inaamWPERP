@@ -307,6 +307,27 @@ def record_stock_movement(
             "warehouse_id": movement.warehouse_id,
         },
     )
+    # A Vendor Shop warehouse is the single shared stock ledger for that
+    # vendor. This also covers administrator inventory entries made outside
+    # the Shop/POS screens, so the catalog and POS never keep a stale copy.
+    if warehouse.warehouse_type == "vendor_shop" and warehouse.vendor_id and payload.variant_id is None:
+        from erp.packages.core.shop_services import (
+            queue_published_shop_stock_sync,
+            sync_product_catalog_quantity_from_shop,
+        )
+
+        sync_product_catalog_quantity_from_shop(
+            db,
+            company_id=scoped_company_id,
+            vendor_id=warehouse.vendor_id,
+            product_id=product.id,
+        )
+        queue_published_shop_stock_sync(
+            db,
+            company_id=scoped_company_id,
+            vendor_id=warehouse.vendor_id,
+            product_id=product.id,
+        )
     return movement
 
 

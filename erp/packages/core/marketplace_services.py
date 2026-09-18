@@ -193,6 +193,8 @@ def vendor_order_item_out(
         finance_reason=item.finance_reason,
         order_number=order.order_number if order else None,
         order_status=order.status if order else None,
+        sales_channel=order.sales_channel if order else None,
+        reservation_status=order.reservation_status if order else None,
         payment_status=order.payment_status if order else None,
         settlement_id=item.settlement_id,
         metadata=item.metadata_json,
@@ -1118,6 +1120,7 @@ def list_vendor_order_items(
     status: str | None = None,
     order_status: str | None = None,
     payment_status: str | None = None,
+    sales_channel: str | None = None,
     settlement_id: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
@@ -1136,7 +1139,7 @@ def list_vendor_order_items(
         query = query.where(VendorOrderItem.status == status)
     if settlement_id:
         query = query.where(VendorOrderItem.settlement_id == settlement_id)
-    if order_status or payment_status:
+    if order_status or payment_status or sales_channel:
         query = query.join(
             Order,
             (Order.id == VendorOrderItem.order_id)
@@ -1146,6 +1149,8 @@ def list_vendor_order_items(
         query = query.where(Order.status == order_status)
     if payment_status:
         query = query.where(Order.payment_status == payment_status)
+    if sales_channel:
+        query = query.where(Order.sales_channel == sales_channel)
     if date_from:
         query = query.where(VendorOrderItem.created_at >= date_from)
     if date_to:

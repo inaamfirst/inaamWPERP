@@ -1323,6 +1323,9 @@
 .posSimpleList { display: grid; gap: 8px; }
 .posSimpleRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid #e5eaf1; border-radius: 10px; padding: 11px; }
 .posSimpleRow > div { display: grid; gap: 4px; min-width: 0; }
+.posHistoryActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.posHistoryTotal { display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 2px solid #e2e7ef; font-size: 18px; }
+.inlineError { display: inline-block; margin-top: 5px; color: #b42318; font-size: 12px; font-weight: 700; }
 
 @media (max-width: 900px) {
   .posMainGrid { grid-template-columns: 1fr; }

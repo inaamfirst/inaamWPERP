@@ -47,11 +47,16 @@ from erp.packages.core.db.models import (
     SyncRunLog,
     User,
     Vendor,
+    VendorOrderItem,
     VendorProduct,
     Warehouse,
     new_uuid,
 )
-from erp.packages.core.schemas import SyncConflictResolveRequest, WooCommerceConfigRequest
+from erp.packages.core.schemas import (
+    StockMovementCreate,
+    SyncConflictResolveRequest,
+    WooCommerceConfigRequest,
+)
 from erp.packages.core.security import decrypt_text, encrypt_text
 from erp.packages.core.services import ServiceError, record_audit, utcnow
 
@@ -1475,6 +1480,24 @@ def sync_product_stock_from_woocommerce(
     product: Product,
     item: dict,
 ) -> None:
+    # A vendor's local shop ledger is the authoritative shared balance. Pulling
+    # the remote product quantity here would overwrite POS/purchase movements
+    # and make an online order appear to use a second warehouse balance.
+    vendor_ids = {
+        value
+        for value in [product.vendor_id]
+        if value
+    }
+    vendor_ids.update(
+        db.scalars(
+            select(VendorProduct.vendor_id).where(
+                VendorProduct.company_id == company_id,
+                VendorProduct.product_id == product.id,
+            )
+        ).all()
+    )
+    if vendor_ids:
+        return
     target_quantity = _parse_woo_stock_quantity(item)
     if target_quantity is None:
         return
@@ -3152,6 +3175,216 @@ def apply_woocommerce_order_status(
         )
 
 
+def _online_order_stock_issue(
+    db: Session,
+    *,
+    company_id: str,
+    order: Order,
+    details: list[dict[str, object]],
+) -> None:
+    metadata = dict(order.metadata_json or {})
+    metadata["online_stock_issue"] = {
+        "message": "Online order needs a stock reconciliation before it can be deducted.",
+        "items": details,
+        "updated_at": utcnow().isoformat(),
+    }
+    order.metadata_json = metadata
+    order.reservation_status = "stock_issue"
+    record_audit(
+        db,
+        action="commerce.online_stock_reconciliation_required",
+        company_id=company_id,
+        entity_type="order",
+        entity_id=order.id,
+        metadata={"order_number": order.order_number, "items": details},
+    )
+
+
+def deduct_woocommerce_order_stock(
+    db: Session,
+    *,
+    company_id: str,
+    order: Order,
+) -> bool:
+    """Deduct each vendor's published online sale from that vendor's shop stock once."""
+    if order.sales_channel != "woocommerce" or order.status in {"cancelled", "refunded"}:
+        return False
+    if order.reservation_status in {"deducted", "baseline"}:
+        return True
+
+    from erp.packages.core.inventory_services import current_stock, record_stock_movement
+    from erp.packages.core.shop_services import (
+        queue_published_shop_stock_sync,
+        sync_product_catalog_quantity_from_shop,
+        vendor_shop_warehouse,
+    )
+
+    rows = list(
+        db.scalars(
+            select(VendorOrderItem).where(
+                VendorOrderItem.company_id == company_id,
+                VendorOrderItem.order_id == order.id,
+            )
+        ).all()
+    )
+    required: dict[tuple[str, str, str | None], int] = {}
+    for row in rows:
+        key = (row.vendor_id, row.product_id, row.variant_id)
+        required[key] = required.get(key, 0) + row.quantity
+    if not required:
+        # Company-owned order lines continue through the normal company inventory
+        # flow. This helper only enforces the dedicated vendor shop balance.
+        return False
+
+    shortages: list[dict[str, object]] = []
+    warehouses: dict[str, Warehouse] = {}
+    for (vendor_id, product_id, variant_id), quantity in required.items():
+        warehouse = warehouses.setdefault(
+            vendor_id, vendor_shop_warehouse(db, company_id, vendor_id)
+        )
+        available = current_stock(
+            db,
+            company_id=company_id,
+            warehouse_id=warehouse.id,
+            product_id=product_id,
+            variant_id=variant_id,
+        )
+        if available < quantity:
+            shortages.append(
+                {
+                    "vendor_id": vendor_id,
+                    "product_id": product_id,
+                    "variant_id": variant_id,
+                    "ordered_quantity": quantity,
+                    "available_quantity": available,
+                }
+            )
+    if shortages:
+        _online_order_stock_issue(
+            db, company_id=company_id, order=order, details=shortages
+        )
+        return False
+
+    sync_user_id = woocommerce_sync_user_id(db, company_id)
+    for (vendor_id, product_id, variant_id), quantity in required.items():
+        record_stock_movement(
+            db,
+            company_id=company_id,
+            user_id=sync_user_id,
+            payload=StockMovementCreate(
+                movement_type="stock_out",
+                warehouse_id=warehouses[vendor_id].id,
+                product_id=product_id,
+                variant_id=variant_id,
+                quantity=quantity,
+                reference_type="woocommerce_order",
+                reference_id=order.id,
+                reason="WooCommerce order stock deduction.",
+                metadata={"external_order_id": order.external_order_id or ""},
+            ),
+        )
+        if variant_id is None:
+            sync_product_catalog_quantity_from_shop(
+                db,
+                company_id=company_id,
+                vendor_id=vendor_id,
+                product_id=product_id,
+            )
+            queue_published_shop_stock_sync(
+                db,
+                company_id=company_id,
+                vendor_id=vendor_id,
+                product_id=product_id,
+            )
+    metadata = dict(order.metadata_json or {})
+    metadata.pop("online_stock_issue", None)
+    order.metadata_json = metadata
+    order.reservation_status = "deducted"
+    record_audit(
+        db,
+        action="commerce.woocommerce_order_stock_deducted",
+        company_id=company_id,
+        user_id=sync_user_id,
+        entity_type="order",
+        entity_id=order.id,
+        metadata={"order_number": order.order_number, "line_count": len(required)},
+    )
+    return True
+
+
+def restore_cancelled_woocommerce_order_stock(
+    db: Session,
+    *,
+    company_id: str,
+    order: Order,
+) -> bool:
+    """Restore a cancelled online order exactly once; refunds need physical receipt."""
+    if order.sales_channel != "woocommerce" or order.reservation_status != "deducted":
+        return False
+    from erp.packages.core.inventory_services import record_stock_movement
+    from erp.packages.core.shop_services import (
+        queue_published_shop_stock_sync,
+        sync_product_catalog_quantity_from_shop,
+        vendor_shop_warehouse,
+    )
+
+    rows = list(
+        db.scalars(
+            select(VendorOrderItem).where(
+                VendorOrderItem.company_id == company_id,
+                VendorOrderItem.order_id == order.id,
+            )
+        ).all()
+    )
+    restored: dict[tuple[str, str, str | None], int] = {}
+    for row in rows:
+        key = (row.vendor_id, row.product_id, row.variant_id)
+        restored[key] = restored.get(key, 0) + row.quantity
+    sync_user_id = woocommerce_sync_user_id(db, company_id)
+    for (vendor_id, product_id, variant_id), quantity in restored.items():
+        warehouse = vendor_shop_warehouse(db, company_id, vendor_id)
+        record_stock_movement(
+            db,
+            company_id=company_id,
+            user_id=sync_user_id,
+            payload=StockMovementCreate(
+                movement_type="stock_in",
+                warehouse_id=warehouse.id,
+                product_id=product_id,
+                variant_id=variant_id,
+                quantity=quantity,
+                reference_type="woocommerce_order_cancelled",
+                reference_id=order.id,
+                reason="Cancelled WooCommerce order stock restored.",
+                metadata={"external_order_id": order.external_order_id or ""},
+            ),
+        )
+        if variant_id is None:
+            sync_product_catalog_quantity_from_shop(
+                db,
+                company_id=company_id,
+                vendor_id=vendor_id,
+                product_id=product_id,
+            )
+            queue_published_shop_stock_sync(
+                db,
+                company_id=company_id,
+                vendor_id=vendor_id,
+                product_id=product_id,
+            )
+    order.reservation_status = "restored"
+    record_audit(
+        db,
+        action="commerce.woocommerce_order_stock_restored",
+        company_id=company_id,
+        user_id=sync_user_id,
+        entity_type="order",
+        entity_id=order.id,
+        metadata={"order_number": order.order_number, "line_count": len(restored)},
+    )
+    return bool(restored)
+
+
 def extract_vendor_id_from_item(item: dict) -> str | None:
     top_level = item.get("vendor_id") or item.get("erp_vendor_id")
     if top_level:
@@ -3416,6 +3649,17 @@ def sync_single_product(db: Session, company_id: str, item: dict) -> Product:
                 external_id=external_id,
             )
 
+    vendor_managed_stock = bool(vendor_id)
+    if product is not None:
+        vendor_managed_stock = vendor_managed_stock or bool(product.vendor_id) or bool(
+            db.scalar(
+                select(VendorProduct.id).where(
+                    VendorProduct.company_id == company_id,
+                    VendorProduct.product_id == product.id,
+                )
+            )
+        )
+
     if product:
         product.name = name
         product.slug = item.get("slug") or product.slug
@@ -3431,9 +3675,10 @@ def sync_single_product(db: Session, company_id: str, item: dict) -> Product:
         product.sale_price_minor = sale_price_minor
         product.tax_status = item.get("tax_status") or product.tax_status
         product.tax_class = item.get("tax_class") or product.tax_class
-        product.manage_stock = bool(item.get("manage_stock", product.manage_stock))
-        product.stock_quantity = _parse_woo_stock_quantity(item)
-        product.stock_status = item.get("stock_status") or product.stock_status
+        if not vendor_managed_stock:
+            product.manage_stock = bool(item.get("manage_stock", product.manage_stock))
+            product.stock_quantity = _parse_woo_stock_quantity(item)
+            product.stock_status = item.get("stock_status") or product.stock_status
         product.backorders = item.get("backorders") or product.backorders
         product.sold_individually = bool(item.get("sold_individually", product.sold_individually))
         dimensions = item.get("dimensions") if isinstance(item.get("dimensions"), dict) else {}
@@ -3502,9 +3747,9 @@ def sync_single_product(db: Session, company_id: str, item: dict) -> Product:
             sale_price_minor=sale_price_minor,
             tax_status=item.get("tax_status") or "taxable",
             tax_class=item.get("tax_class") or None,
-            manage_stock=bool(item.get("manage_stock", False)),
-            stock_quantity=_parse_woo_stock_quantity(item),
-            stock_status=item.get("stock_status") or "instock",
+            manage_stock=bool(item.get("manage_stock", False)) if not vendor_managed_stock else True,
+            stock_quantity=_parse_woo_stock_quantity(item) if not vendor_managed_stock else None,
+            stock_status=(item.get("stock_status") or "instock") if not vendor_managed_stock else "outofstock",
             backorders=item.get("backorders") or "no",
             sold_individually=bool(item.get("sold_individually", False)),
             weight=item.get("weight") or None,
@@ -3680,6 +3925,9 @@ def sync_single_order(db: Session, company_id: str, item: dict) -> Order:
         )
 
     if order:
+        order.sales_channel = "woocommerce"
+        order.order_source = "woocommerce"
+        order.external_order_id = external_id
         apply_woocommerce_order_status(
             db,
             company_id=company_id,
@@ -3871,6 +4119,9 @@ def sync_single_order(db: Session, company_id: str, item: dict) -> Order:
             payload=order_create_payload,
         )
         order.order_number = f"WC-{item['number']}"
+        order.sales_channel = "woocommerce"
+        order.order_source = "woocommerce"
+        order.external_order_id = external_id
         upsert_external_resource_map(
             db,
             company_id=company_id,
@@ -3905,6 +4156,17 @@ def sync_single_order(db: Session, company_id: str, item: dict) -> Order:
                 order_id=order.id,
                 payload=payment_payload,
             )
+
+    # The same source order can arrive through a webhook and the scheduled
+    # pull. The stock helper is idempotent through reservation_status and keeps
+    # vendor stock in the Vendor Shop warehouse rather than WooCommerce's
+    # legacy reference warehouse.
+    if order.status == "cancelled":
+        restore_cancelled_woocommerce_order_stock(
+            db, company_id=company_id, order=order
+        )
+    elif order.status != "refunded":
+        deduct_woocommerce_order_stock(db, company_id=company_id, order=order)
 
     db.flush()
     return order

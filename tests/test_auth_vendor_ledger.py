@@ -878,7 +878,14 @@ def test_vendor_self_service_catalog_stock_and_item_fulfilment(harness: Harness)
         },
     )
     assert order.status_code == 201, order.text
-    vendor_item = harness.client.get("/api/v1/vendor/orders", headers=vendor_headers).json()[0]
+    # The vendor's Online Orders queue now intentionally contains only
+    # WooCommerce orders; this plain ERP order remains available to admins for
+    # operational review but is not mixed into the vendor's POS/online views.
+    vendor_item = harness.client.get(
+        f"/api/v1/marketplace/vendors/{registration['vendor_id']}/order-items",
+        headers=admin_headers,
+        params={"sales_channel": "legacy"},
+    ).json()[0]
     accepted = harness.client.post(
         f"/api/v1/vendor/order-items/{vendor_item['id']}/status",
         headers=vendor_headers,

@@ -11,7 +11,7 @@ import {
   vendorOrderStatusEndpoint,
 } from "@/lib/vendor-orders";
 
-type VendorOrder = { id: string; order_id: string; order_number?: string; name: string; quantity: number; line_total_minor: number; status: string; order_status?: string; created_at: string };
+type VendorOrder = { id: string; order_id: string; order_number?: string; name: string; quantity: number; line_total_minor: number; status: string; order_status?: string; reservation_status?: string; created_at: string };
 
 export default function VendorOrders() {
   const { permissions } = useAuth();
@@ -71,7 +71,7 @@ export default function VendorOrders() {
                 <td data-label="Product">{row.name}</td>
                 <td data-label="Qty">{row.quantity}</td>
                 <td data-label="Value">PKR {(row.line_total_minor / 100).toFixed(2)}</td>
-                <td data-label="Status"><span className={`${styles.badge} ${row.status === "delivered" ? styles.badgeSuccess : styles.badgeWarning}`}>{row.status}</span></td>
+                <td data-label="Status"><span className={`${styles.badge} ${row.status === "delivered" ? styles.badgeSuccess : styles.badgeWarning}`}>{row.status}</span>{row.reservation_status === "stock_issue" && <><br /><span className={styles.inlineError}>Stock check needed</span></>}</td>
                 <td data-label="Next action">{canManage && nextVendorOrderStatus(row.status) ? <button type="button" className={styles.primaryButton} onClick={() => void advance(row)}>Move to {nextVendorOrderStatus(row.status)}</button> : <span className={styles.muted}>{canManage ? "No action" : "Read only"}</span>}</td>
               </tr>)}
               {!loading && orders.length === 0 && <tr><td colSpan={6} className={styles.empty}>No order items match this filter.</td></tr>}

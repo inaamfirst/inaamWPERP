@@ -1356,6 +1356,8 @@ class VendorOrderItemOut(BaseModel):
     finance_reason: str | None
     order_number: str | None = None
     order_status: str | None = None
+    sales_channel: str | None = None
+    reservation_status: str | None = None
     payment_status: str | None = None
     settlement_id: str | None
     metadata: dict[str, Any]

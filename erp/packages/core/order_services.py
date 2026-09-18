@@ -279,6 +279,17 @@ def change_order_status(
             order=order,
             reason=payload.reason or "Order refunded.",
         )
+    elif target == "cancelled":
+        # Online orders take stock from the vendor Shop warehouse when they are
+        # imported. A cancellation returns it once; a refund deliberately does
+        # not, because the goods still need a physical return receipt.
+        from erp.packages.core.woocommerce_services import (
+            restore_cancelled_woocommerce_order_stock,
+        )
+
+        restore_cancelled_woocommerce_order_stock(
+            db, company_id=scoped_company_id, order=order
+        )
     from erp.packages.core.push_services import enqueue_order_status_changed
 
     enqueue_order_status_changed(

@@ -339,6 +339,12 @@ def vendor_shop_stock_in(
             vendor_id=vendor_id,
             product_id=product.id,
         )
+        shop_services.queue_published_shop_stock_sync(
+            db,
+            company_id=context.user.company_id,
+            vendor_id=vendor_id,
+            product_id=product.id,
+        )
         db.commit()
         return {"id": movement.id, "product_id": product.id, "quantity": payload.quantity, "quantity_on_hand": quantity, "warehouse_id": warehouse.id}
     except ServiceError as exc:
@@ -374,10 +380,13 @@ def vendor_shop_sales(context: VendorCommerceOrderContext, db: DbSession) -> lis
 @router.get("/commerce/vendor/shop/sales/{order_id}", response_model=OrderOut, tags=["commerce"])
 def vendor_shop_sale_detail(order_id: str, context: VendorCommerceOrderContext, db: DbSession) -> OrderOut:
     vendor_id = _vendor_id(db, context)
-    order = db.scalar(select(Order).join(VendorOrderItem, VendorOrderItem.order_id == Order.id).where(
-        Order.company_id == context.user.company_id, Order.id == order_id,
-        Order.sales_channel == "pos", VendorOrderItem.vendor_id == vendor_id,
-    ))
+    order = shop_services.vendor_has_order(
+        db,
+        company_id=context.user.company_id,
+        vendor_id=vendor_id,
+        order_id=order_id,
+        sales_channel="pos",
+    )
     if order is None:
         raise service_error_to_http(ServiceError(404, "Shop sale not found."))
     return order_out(db, order)
@@ -431,6 +440,13 @@ def admin_vendor_shop(vendor_id: str, context: AdminCommerceContext, db: DbSessi
         "sales": shop_services.list_recent_sales(
             db, context.user.company_id, vendor_id, sales_channel=None
         ),
+        "stock_issues": [
+            row
+            for row in shop_services.list_recent_sales(
+                db, context.user.company_id, vendor_id, sales_channel="woocommerce"
+            )
+            if row["reservation_status"] == "stock_issue"
+        ],
         "stock": commerce_services.list_vendor_stock(db, context.user.company_id, vendor_id),
     }
 
@@ -510,6 +526,12 @@ def vendor_stock_movement(
             db, company_id=context.user.company_id, user_id=context.user.id, payload=payload
         )
         quantity = shop_services.sync_product_catalog_quantity_from_shop(
+            db,
+            company_id=context.user.company_id,
+            vendor_id=vendor_id,
+            product_id=product.id,
+        )
+        shop_services.queue_published_shop_stock_sync(
             db,
             company_id=context.user.company_id,
             vendor_id=vendor_id,

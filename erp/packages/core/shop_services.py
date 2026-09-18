@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from erp.packages.core.catalog_services import get_product, require_company_id
 from erp.packages.core.db.models import (
     Customer,
     Order,
+    OrderItem,
     Payment,
     Product,
     ProductChannelListing,
@@ -67,6 +68,159 @@ def vendor_owns_product(db: Session, company_id: str, vendor_id: str, product: P
             )
         )
     )
+
+
+def vendor_product_ids(db: Session, company_id: str, vendor_id: str) -> set[str]:
+    """Return both direct and legacy product assignments for a vendor."""
+    direct = db.scalars(
+        select(Product.id).where(Product.company_id == company_id, Product.vendor_id == vendor_id)
+    ).all()
+    assigned = db.scalars(
+        select(VendorProduct.product_id).where(
+            VendorProduct.company_id == company_id,
+            VendorProduct.vendor_id == vendor_id,
+        )
+    ).all()
+    return set(direct) | set(assigned)
+
+
+def vendor_orders_query(
+    db: Session,
+    *,
+    company_id: str,
+    vendor_id: str,
+    sales_channel: str | None = None,
+):
+    """Find vendor orders even when a legacy order has no VendorOrderItem row."""
+    product_ids = vendor_product_ids(db, company_id, vendor_id)
+    conditions = [
+        Order.id.in_(
+            select(VendorOrderItem.order_id).where(
+                VendorOrderItem.company_id == company_id,
+                VendorOrderItem.vendor_id == vendor_id,
+            )
+        ),
+        Order.id.in_(
+            select(OrderItem.order_id).where(
+                OrderItem.company_id == company_id,
+                OrderItem.vendor_id == vendor_id,
+            )
+        ),
+    ]
+    if product_ids:
+        conditions.append(
+            Order.id.in_(
+                select(OrderItem.order_id).where(
+                    OrderItem.company_id == company_id,
+                    OrderItem.product_id.in_(product_ids),
+                )
+            )
+        )
+    query = select(Order).where(Order.company_id == company_id, or_(*conditions))
+    if sales_channel is not None:
+        query = query.where(Order.sales_channel == sales_channel)
+    return query
+
+
+def list_vendor_orders(
+    db: Session,
+    company_id: str | None,
+    vendor_id: str,
+    *,
+    sales_channel: str | None = None,
+    limit: int | None = None,
+) -> list[Order]:
+    scoped = require_company_id(company_id)
+    query = vendor_orders_query(
+        db,
+        company_id=scoped,
+        vendor_id=vendor_id,
+        sales_channel=sales_channel,
+    ).order_by(Order.created_at.desc())
+    if limit is not None:
+        query = query.limit(limit)
+    return list(db.scalars(query).all())
+
+
+def vendor_has_order(
+    db: Session,
+    *,
+    company_id: str | None,
+    vendor_id: str,
+    order_id: str,
+    sales_channel: str | None = None,
+) -> Order | None:
+    scoped = require_company_id(company_id)
+    return db.scalar(
+        vendor_orders_query(
+            db,
+            company_id=scoped,
+            vendor_id=vendor_id,
+            sales_channel=sales_channel,
+        ).where(Order.id == order_id)
+    )
+
+
+def _vendor_order_items(
+    db: Session, *, company_id: str, vendor_id: str, order: Order
+) -> list[OrderItem]:
+    """Prefer immutable marketplace assignments; fall back for old POS records."""
+    items = list(
+        db.scalars(
+            select(OrderItem).where(
+                OrderItem.company_id == company_id,
+                OrderItem.order_id == order.id,
+            )
+        ).all()
+    )
+    vendor_item_ids = set(
+        db.scalars(
+            select(VendorOrderItem.order_item_id).where(
+                VendorOrderItem.company_id == company_id,
+                VendorOrderItem.vendor_id == vendor_id,
+                VendorOrderItem.order_id == order.id,
+            )
+        ).all()
+    )
+    if vendor_item_ids:
+        return [item for item in items if item.id in vendor_item_ids]
+    product_ids = vendor_product_ids(db, company_id, vendor_id)
+    return [
+        item
+        for item in items
+        if item.vendor_id == vendor_id or item.product_id in product_ids
+    ]
+
+
+def queue_published_shop_stock_sync(
+    db: Session,
+    *,
+    company_id: str | None,
+    vendor_id: str,
+    product_id: str,
+) -> None:
+    """Push local stock changes only for products explicitly published online."""
+    scoped = require_company_id(company_id)
+    product = get_product(db, scoped, product_id)
+    if not vendor_owns_product(db, scoped, vendor_id, product):
+        raise ServiceError(403, "Product is outside the vendor shop.")
+    listing = db.scalar(
+        select(ProductChannelListing).where(
+            ProductChannelListing.company_id == scoped,
+            ProductChannelListing.product_id == product.id,
+            ProductChannelListing.channel == "woocommerce",
+            ProductChannelListing.listing_status == "published",
+        )
+    )
+    if listing is None:
+        return
+    from erp.packages.core.woocommerce_services import enqueue_product_sync
+
+    try:
+        enqueue_product_sync(db, company_id=scoped, product=product)
+    except ServiceError as exc:
+        if exc.status_code != 404 or exc.message != "WooCommerce is not configured.":
+            raise
 
 
 def sync_product_catalog_quantity_from_shop(
@@ -146,12 +300,20 @@ def sync_product_shop_stock_quantity(
                 reason=reason,
             ),
         )
-    return sync_product_catalog_quantity_from_shop(
+    quantity = sync_product_catalog_quantity_from_shop(
         db,
         company_id=scoped,
         vendor_id=vendor_id,
         product_id=product.id,
     )
+    if delta:
+        queue_published_shop_stock_sync(
+            db,
+            company_id=scoped,
+            vendor_id=vendor_id,
+            product_id=product.id,
+        )
+    return quantity
 
 
 def _supplier(db: Session, company_id: str, vendor_id: str, supplier_id: str) -> ShopSupplier:
@@ -284,29 +446,63 @@ def list_recent_sales(
     sales_channel: str | None = "pos",
 ) -> list[dict[str, object]]:
     scoped = require_company_id(company_id)
-    query = select(Order).join(VendorOrderItem, VendorOrderItem.order_id == Order.id).where(
-        Order.company_id == scoped,
-        VendorOrderItem.company_id == scoped,
-        VendorOrderItem.vendor_id == vendor_id,
+    orders = list_vendor_orders(
+        db,
+        scoped,
+        vendor_id,
+        sales_channel=sales_channel,
+        limit=limit,
     )
-    if sales_channel is not None:
-        query = query.where(Order.sales_channel == sales_channel)
-    orders = db.scalars(query.distinct().order_by(Order.created_at.desc()).limit(limit)).all()
     result: list[dict[str, object]] = []
     for order in orders:
         customer = db.get(Customer, order.customer_id)
-        payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at).limit(1))
+        items = _vendor_order_items(
+            db, company_id=scoped, vendor_id=vendor_id, order=order
+        )
+        payments = list(
+            db.scalars(
+                select(Payment)
+                .where(Payment.company_id == scoped, Payment.order_id == order.id)
+                .order_by(Payment.created_at)
+            ).all()
+        )
+        payment = payments[0] if payments else None
+        line_total = sum(item.line_total_minor for item in items)
         result.append({
             "id": order.id,
             "bill_number": order.order_number,
             "created_at": order.created_at,
             "customer": customer.full_name if customer else "Walk-in Customer",
-            "total_minor": order.total_minor,
+            # A POS order is one vendor's sale. For a multi-vendor online order,
+            # report only the authenticated vendor's lines.
+            "total_minor": order.total_minor if order.sales_channel == "pos" else line_total,
+            "order_total_minor": order.total_minor,
+            "item_quantity": sum(item.quantity for item in items),
+            "items": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "sku": item.sku,
+                    "quantity": item.quantity,
+                    "line_total_minor": item.line_total_minor,
+                }
+                for item in items
+            ],
             "currency": order.currency,
             "channel": order.sales_channel,
             "payment_method": payment.method if payment else "unpaid",
             "payment_status": order.payment_status,
             "status": order.status,
+            "reservation_status": order.reservation_status,
+            "paid_minor": order.paid_minor,
+            "payments": [
+                {
+                    "method": row.method,
+                    "status": row.status,
+                    "amount_minor": row.amount_minor,
+                }
+                for row in payments
+            ],
         })
     return result
 
@@ -374,6 +570,12 @@ def create_purchase(
                 vendor_id=vendor_id,
                 product_id=product.id,
             )
+            queue_published_shop_stock_sync(
+                db,
+                company_id=scoped,
+                vendor_id=vendor_id,
+                product_id=product.id,
+            )
     if payload.payment_minor:
         db.add(ShopFinanceEntry(
             company_id=scoped, vendor_id=vendor_id, entry_type="purchase_payment", direction="out",
@@ -424,10 +626,65 @@ def overview(db: Session, company_id: str | None, vendor_id: str) -> dict[str, o
     finance = list(db.scalars(select(ShopFinanceEntry).where(
         ShopFinanceEntry.company_id == scoped, ShopFinanceEntry.vendor_id == vendor_id
     )).all())
-    return {
+    shop_sales = list_recent_sales(
+        db, scoped, vendor_id, limit=10_000, sales_channel="pos"
+    )
+    online_sales = list_recent_sales(
+        db, scoped, vendor_id, limit=10_000, sales_channel="woocommerce"
+    )
+
+    def channel_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+        active = [row for row in rows if row["status"] not in {"cancelled", "refunded"}]
+        payment_methods: dict[str, int] = {}
+        for row in active:
+            for payment in row["payments"]:
+                if payment["status"] != "paid":
+                    continue
+                method = str(payment["method"] or "other")
+                payment_methods[method] = payment_methods.get(method, 0) + int(
+                    payment["amount_minor"]
+                )
+        return {
+            "sales_count": len(active),
+            "units_sold": sum(int(row["item_quantity"]) for row in active),
+            "sales_minor": sum(int(row["total_minor"]) for row in active),
+            "paid_minor": sum(
+                min(int(row["paid_minor"]), int(row["total_minor"])) for row in active
+            ),
+            "payment_methods": payment_methods,
+        }
+
+    online_payable_minor = int(
+        db.scalar(
+            select(func.coalesce(func.sum(VendorOrderItem.payable_minor), 0)).join(
+                Order,
+                (Order.id == VendorOrderItem.order_id)
+                & (Order.company_id == VendorOrderItem.company_id),
+            ).where(
+                VendorOrderItem.company_id == scoped,
+                VendorOrderItem.vendor_id == vendor_id,
+                Order.sales_channel == "woocommerce",
+                Order.status.not_in({"cancelled", "refunded"}),
+            )
+        )
+        or 0
+    )
+    shop_summary = channel_summary(shop_sales)
+    online_summary = channel_summary(online_sales)
+    online_summary["vendor_payable_minor"] = online_payable_minor
+    shared_inventory = {
         "purchase_total_minor": sum(row.total_minor for row in purchases),
         "supplier_payable_minor": sum(row.total_minor - row.paid_minor for row in purchases),
-        "cash_in_minor": sum(row.amount_minor for row in finance if row.direction == "in"),
         "cash_out_minor": sum(row.amount_minor for row in finance if row.direction == "out"),
+    }
+    return {
+        # Keep legacy fields during the frontend rollout.
+        "purchase_total_minor": shared_inventory["purchase_total_minor"],
+        "supplier_payable_minor": shared_inventory["supplier_payable_minor"],
+        "cash_in_minor": sum(row.amount_minor for row in finance if row.direction == "in"),
+        "cash_out_minor": shared_inventory["cash_out_minor"],
+        "shop": shop_summary,
+        "online": online_summary,
+        "shared_inventory": shared_inventory,
         "currency": "PKR",
     }

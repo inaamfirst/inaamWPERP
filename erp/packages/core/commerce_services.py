@@ -467,9 +467,18 @@ def create_pos_sale(
             ),
         )
         if vendor_id and item.variant_id is None:
-            from erp.packages.core.shop_services import sync_product_catalog_quantity_from_shop
+            from erp.packages.core.shop_services import (
+                queue_published_shop_stock_sync,
+                sync_product_catalog_quantity_from_shop,
+            )
 
             sync_product_catalog_quantity_from_shop(
+                db,
+                company_id=scoped,
+                vendor_id=vendor_id,
+                product_id=item.product_id,
+            )
+            queue_published_shop_stock_sync(
                 db,
                 company_id=scoped,
                 vendor_id=vendor_id,

@@ -669,6 +669,46 @@ def test_fresh_installation_matches_runtime_schema_on_sqlite(tmp_path: Path) -> 
         engine.dispose()
 
 
+def test_vendor_shop_shared_stock_migration_moves_only_remaining_woo_balance_once(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    database_url = f"sqlite:///{tmp_path / 'vendor-shop-shared-stock.db'}"
+    cfg = migration_config(root, database_url)
+    command.upgrade(cfg, "202609100028")
+    engine = sa.create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(sa.text("INSERT INTO companies (id, name, slug, status) VALUES ('company-stock', 'Stock Company', 'stock-company', 'active')"))
+            connection.execute(sa.text("INSERT INTO users (id, company_id, username, password_hash, is_active) VALUES ('user-stock', 'company-stock', 'stock-user', 'hash', true)"))
+            connection.execute(sa.text("INSERT INTO vendors (id, company_id, name, slug, status, default_commission_bps, metadata) VALUES ('vendor-stock', 'company-stock', 'Stock Vendor', 'stock-vendor', 'approved', 0, '{}')"))
+            connection.execute(sa.text("INSERT INTO customers (id, company_id, full_name, source_channel, status, credit_limit_minor, metadata) VALUES ('customer-stock', 'company-stock', 'Customer', 'woocommerce', 'active', 0, '{}')"))
+            connection.execute(sa.text("INSERT INTO products (id, company_id, vendor_id, name, slug, status, manage_stock, stock_status, metadata) VALUES ('product-stock', 'company-stock', 'vendor-stock', 'Stock Product', 'stock-product', 'active', true, 'instock', '{}')"))
+            connection.execute(sa.text("INSERT INTO warehouses (id, company_id, vendor_id, warehouse_type, code, name, is_active) VALUES ('warehouse-woo', 'company-stock', NULL, 'company', 'WOO', 'WooCommerce', true)"))
+            connection.execute(sa.text("INSERT INTO stock_movements (id, company_id, warehouse_id, product_id, movement_type, quantity_delta, reference_type, reference_id, metadata, created_by_id) VALUES ('movement-woo', 'company-stock', 'warehouse-woo', 'product-stock', 'opening', 7, 'legacy', 'woo-balance', '{}', 'user-stock')"))
+            connection.execute(sa.text("INSERT INTO orders (id, company_id, customer_id, order_number, sales_channel, order_source, reservation_status, status, currency, metadata) VALUES ('order-stock', 'company-stock', 'customer-stock', 'WC-1', 'legacy', 'legacy', 'none', 'confirmed', 'PKR', '{}')"))
+            connection.execute(sa.text("INSERT INTO external_resource_map (id, company_id, connector, internal_resource_type, internal_resource_id, external_resource_type, external_resource_id, metadata) VALUES ('map-stock', 'company-stock', 'woocommerce', 'order', 'order-stock', 'order', '123', '{}')"))
+
+        command.upgrade(cfg, "head")
+        with engine.connect() as connection:
+            shop_warehouse = connection.execute(sa.text("SELECT id FROM warehouses WHERE company_id = 'company-stock' AND vendor_id = 'vendor-stock' AND warehouse_type = 'vendor_shop'" )).scalar_one()
+            woo_balance = connection.execute(sa.text("SELECT COALESCE(SUM(quantity_delta), 0) FROM stock_movements WHERE warehouse_id = 'warehouse-woo'" )).scalar_one()
+            shop_balance = connection.execute(sa.text("SELECT COALESCE(SUM(quantity_delta), 0) FROM stock_movements WHERE warehouse_id = :warehouse"), {"warehouse": shop_warehouse}).scalar_one()
+            order = connection.execute(sa.text("SELECT sales_channel, order_source, reservation_status FROM orders WHERE id = 'order-stock'" )).mappings().one()
+            catalog_quantity = connection.execute(sa.text("SELECT stock_quantity FROM products WHERE id = 'product-stock'" )).scalar_one()
+        assert woo_balance == 0
+        assert shop_balance == 7
+        assert dict(order) == {"sales_channel": "woocommerce", "order_source": "woocommerce", "reservation_status": "baseline"}
+        assert catalog_quantity == 7
+
+        command.upgrade(cfg, "head")
+        with engine.connect() as connection:
+            count = connection.execute(sa.text("SELECT COUNT(*) FROM stock_movements WHERE reference_type = 'vendor_shop_baseline_transfer'" )).scalar_one()
+        assert count == 2
+    finally:
+        engine.dispose()
+
+
 def test_runtime_schema_migration_adopts_existing_tables_on_sqlite(
     tmp_path: Path,
 ) -> None:
