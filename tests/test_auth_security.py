@@ -658,7 +658,7 @@ def test_login_registration_reset_and_activation_are_throttled(
 
     with api_harness.session_factory() as db:
         rows = list(db.scalars(sa.select(LoginThrottle)).all())
-        assert len(rows) >= 10
+        assert len(rows) >= 9
         assert all("admin" not in row.scope_key for row in rows)
         assert all("127.0.0.1" not in row.scope_key for row in rows)
 

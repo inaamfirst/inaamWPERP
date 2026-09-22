@@ -38,6 +38,7 @@ class LoginRequest(BaseModel):
     # Old clients omit this field and retain the historical access-session TTL.
     # Refresh-aware clients opt in to short-lived access tokens.
     supports_refresh: bool = False
+    login_device_id: str | None = Field(default=None, min_length=8, max_length=160)
 
 
 class RefreshRequest(BaseModel):

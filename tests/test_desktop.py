@@ -367,6 +367,9 @@ def test_api_client_login_uses_longer_timeout(monkeypatch) -> None:
     payload = ApiHealthClient().login("admin", "admin12345")
 
     assert payload == {"access_token": "token-1"}
+    assert isinstance(calls[0][3], dict)
+    assert isinstance(calls[0][3].get("login_device_id"), str)
+    calls[0][3].pop("login_device_id")
     assert calls == [
         (
             "POST",

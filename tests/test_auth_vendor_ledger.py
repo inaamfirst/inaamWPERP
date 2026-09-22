@@ -16,6 +16,7 @@ from erp.packages.core.db.models import (
     Order,
     Payment,
     Product,
+    User,
     Vendor,
     VendorInventoryMovement,
     VendorProduct,
@@ -23,6 +24,7 @@ from erp.packages.core.db.models import (
     Warehouse,
 )
 from erp.packages.core.db.session import get_session
+from erp.packages.core.security import hash_password
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,44 @@ def test_repeated_login_failures_are_rate_limited(harness: Harness) -> None:
         assert harness.client.post("/api/v1/auth/login", json=payload).status_code == 401
     blocked = harness.client.post("/api/v1/auth/login", json=payload)
     assert blocked.status_code == 429
+
+
+def test_login_throttle_isolated_by_device_and_account(harness: Harness) -> None:
+    setup(harness)
+    with harness.session_factory() as db:
+        admin = db.scalar(select(User).where(User.username == "admin"))
+        assert admin is not None
+        db.add(
+            User(
+                company_id=admin.company_id,
+                username="second-user",
+                email="second-user@example.test",
+                password_hash=hash_password("second12345"),
+            )
+        )
+        db.commit()
+
+    device_a = "11111111-1111-4111-8111-111111111111"
+    device_b = "22222222-2222-4222-8222-222222222222"
+    bad_admin = {
+        "workspace_slug": "ledger-test",
+        "username": "admin",
+        "password": "incorrect-password",
+        "login_device_id": device_a,
+    }
+    for _ in range(5):
+        assert harness.client.post("/api/v1/auth/login", json=bad_admin).status_code == 401
+    assert harness.client.post("/api/v1/auth/login", json=bad_admin).status_code == 429
+
+    other_device = {**bad_admin, "password": "admin12345", "login_device_id": device_b}
+    assert harness.client.post("/api/v1/auth/login", json=other_device).status_code == 200
+
+    other_account = {
+        **bad_admin,
+        "username": "second-user",
+        "password": "second12345",
+    }
+    assert harness.client.post("/api/v1/auth/login", json=other_account).status_code == 200
 
 
 def test_final_active_administrator_cannot_be_disabled(harness: Harness) -> None:

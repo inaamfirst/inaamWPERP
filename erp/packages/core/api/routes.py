@@ -1347,6 +1347,7 @@ def login(
             workspace_slug=payload.workspace_slug,
             user_agent=user_agent,
             ip_address=request.client.host if request.client else None,
+            login_device_id=payload.login_device_id,
             remember_me=payload.remember_me,
             refresh_capable=payload.supports_refresh,
         )

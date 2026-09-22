@@ -20,6 +20,7 @@ from erp.apps.api.web import (
     ACCESS_COOKIE,
     ACTIVATION_COOKIE,
     CSRF_COOKIE,
+    LOGIN_DEVICE_COOKIE,
     REFRESH_COOKIE,
     RESET_COOKIE,
 )
@@ -45,6 +46,7 @@ from erp.packages.core.security import hash_password, hash_session_token
 from erp.packages.core.services import (
     auth_throttle_scope_keys,
     create_action_token,
+    login_throttle_scope_key,
     utcnow,
 )
 
@@ -739,14 +741,16 @@ def test_web_login_reset_and_activation_throttles(
 ) -> None:
     _setup(web_harness)
     fixed_ip = "198.51.100.77"
+    fixed_device = "11111111-1111-4111-8111-111111111111"
     monkeypatch.setattr(web, "client_ip", lambda _request: fixed_ip)
+    web_harness.client.cookies.set(LOGIN_DEVICE_COOKIE, fixed_device)
 
-    login_scope = auth_throttle_scope_keys(
-        action="login",
+    login_scope = login_throttle_scope_key(
         account_identifier="admin",
         workspace=_workspace(web_harness),
+        login_device_id=fixed_device,
         ip_address=fixed_ip,
-    )[0]
+    )
     forgot_scope = auth_throttle_scope_keys(
         action="password_reset_request",
         account_identifier="forgot-throttled",

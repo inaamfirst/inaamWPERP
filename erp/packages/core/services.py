@@ -407,6 +407,31 @@ def auth_throttle_scope_keys(
     return tuple(keys)
 
 
+def login_throttle_scope_key(
+    *,
+    account_identifier: str,
+    workspace: str | None = None,
+    login_device_id: str | None = None,
+    ip_address: str | None = None,
+) -> str:
+    """Build one login throttle scope for an account and device."""
+
+    normalized_workspace = normalize_company_slug(workspace) if workspace else "unscoped"
+    device_scope = (login_device_id or "").strip().lower()
+    if not device_scope:
+        device_scope = f"ip:{(ip_address or 'unknown').strip().lower()}"
+    raw = "|".join(
+        [
+            "login",
+            "account",
+            account_identifier.strip().lower(),
+            normalized_workspace,
+            device_scope,
+        ]
+    )
+    return hash_session_token(raw)
+
+
 def check_auth_throttle(db: Session, scope_keys: tuple[str, ...]) -> None:
     if not scope_keys:
         return
@@ -683,6 +708,7 @@ def authenticate(
     workspace_slug: str | None = None,
     user_agent: str | None = None,
     ip_address: str | None = None,
+    login_device_id: str | None = None,
     remember_me: bool = False,
     refresh_capable: bool = False,
 ) -> IssuedSession:
@@ -695,12 +721,13 @@ def authenticate(
         raise ServiceError(409, "First-use setup is required before login.")
 
     workspace_scope = workspace_slug or company_id
-    scope_keys = auth_throttle_scope_keys(
-        action="login",
+    login_scope_key = login_throttle_scope_key(
         account_identifier=username,
         workspace=workspace_scope,
+        login_device_id=login_device_id,
         ip_address=ip_address,
     )
+    scope_keys = (login_scope_key,)
     check_auth_throttle(db, scope_keys)
     scoped_company_id = company_id
     if workspace_slug:
@@ -748,9 +775,8 @@ def authenticate(
         raise ServiceError(401, "Invalid username or password.")
 
     ensure_login_allowed(db, user)
-    # A successful account authentication clears only that account scope. An IP
-    # under active attack remains throttled independently.
-    clear_auth_throttle(db, scope_keys[:1])
+    # A successful authentication clears only this account/device scope.
+    clear_auth_throttle(db, scope_keys)
     user.last_login_at = utcnow()
     issued = issue_session(
         db,

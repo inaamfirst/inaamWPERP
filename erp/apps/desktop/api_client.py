@@ -4,6 +4,7 @@ import hashlib
 import json as jsonlib
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 
 import httpx
@@ -72,12 +73,28 @@ class ApiHealthClient:
             "enterprise-commerce-erp:"
             + hashlib.sha256(self.base_url.encode("utf-8")).hexdigest()[:16]
         )
+        self._login_device_id = self._load_login_device_id()
         self._session_lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._remembered = False
         self._session_generation = 0
+
+    def _load_login_device_id(self) -> str:
+        """Load one install identifier without making login depend on keyring."""
+
+        if keyring is not None:
+            try:
+                existing = keyring.get_password(self._credential_service, "login_device_id")
+                if existing:
+                    return existing
+                generated = str(uuid.uuid4())
+                keyring.set_password(self._credential_service, "login_device_id", generated)
+                return generated
+            except Exception:
+                pass
+        return str(uuid.uuid4())
 
     @property
     def access_token(self) -> str | None:
@@ -372,6 +389,7 @@ class ApiHealthClient:
             "username": username,
             "password": password,
             "supports_refresh": True,
+            "login_device_id": self._login_device_id,
         }
         if remember_me:
             payload["remember_me"] = True

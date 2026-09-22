@@ -6,6 +6,9 @@ import { passthroughBackendResponse } from "@/lib/bff-response";
 const ACCESS_COOKIE = "erp_access";
 const REFRESH_COOKIE = "erp_refresh";
 const CSRF_COOKIE = "erp_bff_csrf";
+const LOGIN_DEVICE_COOKIE = "erp_login_device";
+const LOGIN_DEVICE_MAX_AGE = 365 * 24 * 60 * 60;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const PUBLIC_MUTATIONS = new Set([
   "auth/login",
@@ -37,6 +40,13 @@ function clearAuthCookies(response: NextResponse) {
   response.cookies.set(CSRF_COOKIE, "", { ...cookieOptions(false), maxAge: 0 });
 }
 
+function loginDeviceCookieOptions() {
+  return {
+    ...cookieOptions(true),
+    maxAge: LOGIN_DEVICE_MAX_AGE,
+  };
+}
+
 function jsonResponse(response: Response, payload: unknown): NextResponse {
   const result = NextResponse.json(payload, { status: response.status });
   const requestId = response.headers.get("x-request-id");
@@ -59,6 +69,10 @@ async function handle(request: NextRequest, context: RouteContext): Promise<Next
   const cookieStore = await cookies();
   const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
   const refreshToken = cookieStore.get(REFRESH_COOKIE)?.value;
+  const storedLoginDeviceId = cookieStore.get(LOGIN_DEVICE_COOKIE)?.value;
+  const loginDeviceId = UUID_PATTERN.test(storedLoginDeviceId || "")
+    ? storedLoginDeviceId
+    : crypto.randomUUID();
 
   if (!SAFE_METHODS.has(request.method) && !PUBLIC_MUTATIONS.has(endpoint)) {
     const expected = cookieStore.get(CSRF_COOKIE)?.value;
@@ -80,6 +94,15 @@ async function handle(request: NextRequest, context: RouteContext): Promise<Next
 
   let body: ArrayBuffer | undefined;
   if (!SAFE_METHODS.has(request.method)) body = await request.arrayBuffer();
+  if (endpoint === "auth/login" && body) {
+    try {
+      const payload = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+      payload.login_device_id = loginDeviceId;
+      body = new TextEncoder().encode(JSON.stringify(payload)).buffer;
+    } catch {
+      // Let the backend return its normal validation response for malformed JSON.
+    }
+  }
   if (endpoint === "auth/refresh") {
     if (!refreshToken) return NextResponse.json({ detail: "Refresh token required." }, { status: 401 });
     headers.set("content-type", "application/json");
@@ -122,6 +145,9 @@ async function handle(request: NextRequest, context: RouteContext): Promise<Next
       result.cookies.set(REFRESH_COOKIE, payload.refresh_token, { ...cookieOptions(true), maxAge: 24 * 60 * 60 });
     }
     result.cookies.set(CSRF_COOKIE, crypto.randomUUID(), { ...cookieOptions(false), maxAge: 24 * 60 * 60 });
+  }
+  if (endpoint === "auth/login" && loginDeviceId) {
+    result.cookies.set(LOGIN_DEVICE_COOKIE, loginDeviceId, loginDeviceCookieOptions());
   }
   if (endpoint === "auth/logout" && (backendResponse.ok || backendResponse.status === 401)) {
     clearAuthCookies(result);

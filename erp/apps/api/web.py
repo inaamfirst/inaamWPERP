@@ -48,6 +48,7 @@ DbSession = Annotated[Session, Depends(get_session)]
 ACCESS_COOKIE = "erp_access"
 REFRESH_COOKIE = "erp_refresh"
 CSRF_COOKIE = "erp_csrf"
+LOGIN_DEVICE_COOKIE = "erp_login_device"
 ACTIVATION_COOKIE = "erp_activation_action"
 RESET_COOKIE = "erp_reset_action"
 CSRF_MAX_AGE_SECONDS = 30 * 60
@@ -363,6 +364,7 @@ def login_submit(
     verify_csrf(request, csrf_token, purpose="login")
     settings = request_settings(request)
     next_url = safe_next_url(next)
+    login_device_id = request.cookies.get(LOGIN_DEVICE_COOKIE) or generate_session_token()
     try:
         issued = authenticate(
             db,
@@ -371,6 +373,7 @@ def login_submit(
             workspace_slug=workspace_slug,
             user_agent=request.headers.get("user-agent"),
             ip_address=client_ip(request),
+            login_device_id=login_device_id,
             remember_me=remember_me == "yes",
             refresh_capable=True,
         )
@@ -386,7 +389,7 @@ def login_submit(
             if status_code == 429
             else "Unable to sign in with those credentials."
         )
-        return new_csrf_response(
+        error_response = new_csrf_response(
             request,
             "Sign in",
             lambda csrf: auth_form(
@@ -400,8 +403,27 @@ def login_submit(
             purpose="login",
             status_code=status_code,
         )
+        error_response.set_cookie(
+            LOGIN_DEVICE_COOKIE,
+            login_device_id,
+            max_age=365 * 24 * 60 * 60,
+            path="/",
+            httponly=True,
+            secure=cookie_secure(settings),
+            samesite="strict",
+        )
+        return error_response
     response = RedirectResponse(next_url, status_code=303)
     set_session_cookies(response, issued, settings)
+    response.set_cookie(
+        LOGIN_DEVICE_COOKIE,
+        login_device_id,
+        max_age=365 * 24 * 60 * 60,
+        path="/",
+        httponly=True,
+        secure=cookie_secure(settings),
+        samesite="strict",
+    )
     _delete_cookie(response, CSRF_COOKIE, settings, path="/", samesite="strict")
     return response
 
